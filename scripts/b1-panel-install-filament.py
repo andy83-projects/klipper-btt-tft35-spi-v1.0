@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the filament/status-resume update, preserving host policy/config."""
+"""Install an incremental panel update (extension, UI, helper), preserving host policy/config."""
 import datetime
 import hashlib
 import json
@@ -88,7 +88,7 @@ def main():
             install_file(backup / str(target).lstrip('/'), target)
         restart()
         raise
-    print('Installed load/unload controls and paused-screen Resume; Klipper ready.')
+    print('Installed panel update; Klipper and panel helper ready.')
     print('No motion, heating, print start or resume was executed by this installer.')
 
 
