@@ -10,6 +10,7 @@ on:
       - .github/workflows/klipper3d-deploy.yaml
 jobs:
   deploy:
+    if: github.repository == 'Klipper3d/klipper'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5

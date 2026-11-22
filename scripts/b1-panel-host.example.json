@@ -1,0 +1,8 @@
+{
+  "user": "biqu",
+  "group": "biqu",
+  "interface": "wlan0",
+  "allow_network_changes": false,
+  "require_recovery": true,
+  "serial_recovery_approved": false
+}

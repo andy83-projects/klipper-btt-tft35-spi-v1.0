@@ -1,0 +1,26 @@
+[Unit]
+Description=B1 panel local NetworkManager and shutdown helper
+After=NetworkManager.service
+Wants=NetworkManager.service
+Before=klipper.service
+
+[Service]
+Type=simple
+User=b1-panel
+Group=biqu
+ExecStart=/usr/bin/python3 /usr/local/lib/b1-panel/b1-panel-host.py
+Restart=on-failure
+RestartSec=3
+UMask=0077
+RuntimeDirectory=b1-panel
+RuntimeDirectoryMode=0750
+StateDirectory=b1-panel
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/b1-panel /var/lib/b1-panel
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+[Install]
+WantedBy=multi-user.target

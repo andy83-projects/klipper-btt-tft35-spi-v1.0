@@ -4,3 +4,7 @@ out
 .config
 .config.old
 klippy/.version
+
+# Local printer settings and generated slicer artifacts
+output/
+config/b1-panel-host.json
