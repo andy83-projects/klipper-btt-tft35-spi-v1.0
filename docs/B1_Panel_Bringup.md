@@ -128,6 +128,19 @@ previous menu; Menu > Back returns to status. Available pages:
 
 ### Local host helper and permissions
 
+### Reset button recovery
+
+The TFT35-SPI button beside the encoder drives EXP2_8, the mainboard MCU
+RESET line. Pressing it resets the Manta M5P MCU; Klipper then reports
+"Lost communication with MCU 'mcu'" (or "MCU 'mcu' spontaneous restart")
+and the panel, drawn through that MCU, freezes. The host helper polls
+Moonraker every 2 s and, only for those two messages, waits 5 s for USB to
+re-enumerate and sends `FIRMWARE_RESTART`, at most 3 times per 10 minutes.
+Every other shutdown (heater/thermistor faults, M112/emergency stop, other
+MCUs) is left for a person. A firmware restart never heats, moves, resumes
+or starts a print. Disable with `"auto_firmware_restart": false` in
+`/etc/b1-panel.json`.
+
 ### Plugin layout
 
 The panel is installed like other Klipper add-ons, outside the Klipper git

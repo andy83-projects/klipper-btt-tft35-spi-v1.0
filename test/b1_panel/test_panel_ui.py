@@ -621,5 +621,48 @@ class EasyUseTests(unittest.TestCase):
             host.start_job(dict(action='calibrate'))
 
 
+class ResetWatchdogTests(unittest.TestCase):
+    LOST = dict(state='shutdown', state_message="Lost communication with MCU 'mcu'\nOnce the underlying issue is corrected...")
+
+    def test_restarts_after_settle_once_per_cooldown(self):
+        w = host_module.ResetWatchdog()
+        self.assertFalse(w.decide(self.LOST, 100))      # just seen: let USB settle
+        self.assertFalse(w.decide(self.LOST, 104))
+        self.assertTrue(w.decide(self.LOST, 105.5))     # restart
+        self.assertFalse(w.decide(self.LOST, 120))      # still restarting
+        self.assertTrue(w.decide(self.LOST, 151))       # first attempt did not recover
+        spont = dict(state='shutdown', state_message="MCU 'mcu' spontaneous restart")
+        w = host_module.ResetWatchdog()
+        w.decide(spont, 0); self.assertTrue(w.decide(spont, 6))
+
+    def test_never_touches_real_faults_or_other_mcus(self):
+        for message in ("Heater extruder not heating at expected rate",
+                        "Shutdown due to M112 command", "Shutdown due to webhooks request",
+                        "MCU 'mcu' shutdown: ADC out of range",
+                        "Lost communication with MCU 'cb1'",
+                        "Previous MCU 'mcu' shutdown: Timer too close"):
+            w = host_module.ResetWatchdog()
+            info = dict(state='shutdown', state_message=message)
+            self.assertFalse(any(w.decide(info, t) for t in range(0, 300, 2)), message)
+        w = host_module.ResetWatchdog()
+        self.assertFalse(any(w.decide(dict(state='ready', state_message='Printer is ready'), t)
+                             for t in range(0, 60, 2)))
+
+    def test_gives_up_after_three_attempts_in_ten_minutes(self):
+        w = host_module.ResetWatchdog()
+        fired = [t for t in range(0, 600, 2) if w.decide(self.LOST, t)]
+        self.assertEqual(len(fired), 3)
+        # Recovered, then a new press much later is handled again.
+        w.decide(dict(state='ready'), 700)
+        w.decide(self.LOST, 1300); self.assertTrue(w.decide(self.LOST, 1306))
+
+    def test_ready_between_presses_resets_settle_timer(self):
+        w = host_module.ResetWatchdog()
+        w.decide(self.LOST, 0); self.assertTrue(w.decide(self.LOST, 6))
+        w.decide(dict(state='ready'), 30)
+        self.assertFalse(w.decide(self.LOST, 100))  # fresh press: settle again
+        self.assertTrue(w.decide(self.LOST, 106))
+
+
 if __name__ == '__main__':
     unittest.main()

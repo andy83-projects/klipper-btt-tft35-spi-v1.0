@@ -523,6 +523,67 @@ def build_printer_command(request, data):
     raise ValueError('Unknown printer action')
 
 
+class ResetWatchdog:
+    """Recover from the panel's reset button (EXP2_8 = mainboard MCU RESET).
+
+    Pressing it resets the printer MCU; Klipper then reports a lost/restarted
+    MCU and waits for FIRMWARE_RESTART, and the panel (drawn through that MCU)
+    freezes. Only those two shutdown reasons are recovered automatically;
+    heater, thermistor, M112/emergency and every other shutdown still needs a
+    person. A firmware restart never heats, moves, resumes or starts a print.
+    """
+    MESSAGES = ("Lost communication with MCU 'mcu'", "MCU 'mcu' spontaneous restart")
+    SETTLE = 5.        # let USB re-enumerate before restarting
+    COOLDOWN = 45.     # time for one restart attempt to finish
+    WINDOW = 600.      # at most MAX_ATTEMPTS restarts per this many seconds
+    MAX_ATTEMPTS = 3
+
+    def __init__(self):
+        self.first_seen = None
+        self.last_attempt = None
+        self.attempts = []
+
+    @classmethod
+    def recoverable(cls, info):
+        return (info.get('state') in ('shutdown', 'error')
+                and str(info.get('state_message', '')).startswith(cls.MESSAGES))
+
+    def decide(self, info, now):
+        """Return True when a FIRMWARE_RESTART should be sent now."""
+        self.attempts = [t for t in self.attempts if now - t < self.WINDOW]
+        if not self.recoverable(info):
+            self.first_seen = None
+            return False
+        if self.first_seen is None:
+            self.first_seen = now
+        if now - self.first_seen < self.SETTLE:
+            return False
+        if self.last_attempt is not None and now - self.last_attempt < self.COOLDOWN:
+            return False
+        if len(self.attempts) >= self.MAX_ATTEMPTS:
+            return False  # likely a real wiring/USB fault: leave it for a person
+        self.attempts.append(now)
+        self.last_attempt = now
+        return True
+
+
+def run_reset_watchdog(stop=None, interval=2.):
+    watchdog = ResetWatchdog()
+    while not (stop and stop.is_set()):
+        try:
+            info = json.load(urllib.request.urlopen(MOONRAKER + '/printer/info',
+                                                    timeout=4))['result']
+            if watchdog.decide(info, time.monotonic()):
+                print('Reset button recovery: sending FIRMWARE_RESTART (%s)'
+                      % str(info.get('state_message', '')).splitlines()[0], flush=True)
+                urllib.request.urlopen(urllib.request.Request(
+                    MOONRAKER + '/printer/firmware_restart', data=b'', method='POST'),
+                    timeout=10).read()
+        except Exception:
+            pass  # Moonraker restarting or unreachable; try again next tick
+        time.sleep(interval)
+
+
 def serve(config):
     username = config.get('user', 'biqu')
     uid = pwd.getpwnam(username).pw_uid
@@ -533,6 +594,8 @@ def serve(config):
     if path.exists():
         path.unlink()
     host = Host(config)
+    if config.get('auto_firmware_restart', True):
+        threading.Thread(target=run_reset_watchdog, daemon=True).start()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(path)); os.chmod(path, 0o660)
         server.listen(4)
