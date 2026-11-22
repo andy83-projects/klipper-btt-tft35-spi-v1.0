@@ -157,7 +157,7 @@ class PanelUI:
             if action in ('load', 'unload'):
                 self.filament_phase = None
             self.tell(result.get('error', 'Action failed'),
-                      back=self.action_back if action in ('load', 'unload') else 'main')
+                      back='filament' if action in ('load', 'unload') else 'main')
             return
         if action == 'scan':
             self.network['networks'] = result.get('networks', [])
@@ -174,6 +174,7 @@ class PanelUI:
         elif action in ('load', 'unload'):
             self.filament_phase = None
             self.enter('filament_done')
+            self.selection = 0 if self.filament_action == 'load' else 1
         elif action in ('home', 'pause', 'resume', 'cancel', 'heater',
                         'fan', 'motors_off', 'emergency'):
             self.tell('Command accepted', back=self.action_back)
@@ -220,7 +221,9 @@ class PanelUI:
                     'Temperature: %d C' % self.filament_temperature,
                     'Feed length: %d mm' % self.filament_length]
         if self.mode == 'filament_done':
-            return ['Done', self.filament_action.capitalize() + ' more', 'Turn nozzle off']
+            return ['Extrude %d mm' % self.filament_length,
+                    'Retract %d mm' % self.filament_length,
+                    'Done', 'Turn nozzle off']
         if self.mode == 'motion':
             return ['Jog X', 'Jog Y', 'Jog Z', 'Step: %g mm' % self.jog_step,
                     'Home XY', 'Home Z', 'Home All', 'Motors off', 'Back']
@@ -327,9 +330,10 @@ class PanelUI:
         elif mode == 'filament_heating':
             self._cancel_filament()
         elif mode == 'filament_done':
-            if selected == 1:
+            if selected in (0, 1):
+                self.filament_action = 'load' if selected == 0 else 'unload'
                 self.enter('filament')
-            elif selected == 2:
+            elif selected == 3:
                 self.action_back = 'status' if self.printer_data.get('paused') else 'printer'
                 self.actions.append(dict(action='heater', heater='nozzle', target=0))
                 self.tell('Turning nozzle off...', back=self.action_back)

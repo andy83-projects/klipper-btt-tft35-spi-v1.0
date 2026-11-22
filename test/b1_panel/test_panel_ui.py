@@ -230,8 +230,49 @@ class UITests(unittest.TestCase):
         ui.result('load', {'ok': True})
         self.assertEqual(ui.mode, 'filament_done')
         self.assertIn('Nozzle stays HOT', ui.lines({}))
-        ui.click(); self.assertEqual(ui.mode, 'status')
+        ui.selection = 2; ui.click(); self.assertEqual(ui.mode, 'status')
         self.assertNotIn(dict(action='resume'), ui.actions)
+
+    def test_filament_controls_allow_repeated_extrude_and_retract_until_done(self):
+        ui = PanelUI(); ui.printer_data = dict(state='paused', paused=True,
+            nozzle_target=210, nozzle_temperature=210, can_extrude=True)
+        ui.enter('printer'); ui.selection = 6; ui.click()
+        # Each run reaches the same controls with no stale busy/phase latch.
+        operations = ('load', 'load', 'unload', 'unload', 'load')
+        for index, action in enumerate(operations):
+            self.assertEqual(ui.filament_action, action)
+            self.assertEqual(ui.mode, 'filament')
+            ui.selection = 1; ui.click()
+            self.assertEqual(ui.actions.pop(), dict(action='filament_heat', target=210))
+            ui.result('filament_heat', dict(ok=True))
+            ui.update_network(dict(printer=dict(state='paused', paused=True,
+                nozzle_target=210, nozzle_temperature=210, can_extrude=True)))
+            self.assertEqual(ui.actions.pop(), dict(action=action, length=20, temperature=210))
+            ui.result(action, dict(ok=True))
+            self.assertFalse(ui.waiting)
+            self.assertIsNone(ui.filament_phase)
+            self.assertEqual(ui.mode, 'filament_done')
+            self.assertEqual(ui.items()[:2], ['Extrude 20 mm', 'Retract 20 mm'])
+            self.assertEqual(ui.selection, 0 if action == 'load' else 1)
+            self.assertFalse(ui.actions)
+            # Select the next operation from the completion controls.
+            if index + 1 < len(operations):
+                following = operations[index + 1]
+                ui.selection = 0 if following == 'load' else 1
+                ui.click(); self.assertFalse(ui.actions)
+        ui.selection = 2; ui.click()
+        self.assertEqual(ui.mode, 'status')
+        self.assertFalse(ui.actions)
+
+    def test_filament_feed_failure_keeps_the_controls_reachable(self):
+        ui = PanelUI(); ui.filament_action = 'unload'; ui.waiting = True
+        ui.filament_phase = 'feeding'; ui.enter('filament_feeding')
+        ui.result('unload', dict(ok=False, error='Heat nozzle first'))
+        self.assertFalse(ui.waiting)
+        self.assertIsNone(ui.filament_phase)
+        ui.click(); self.assertEqual(ui.mode, 'filament')
+        self.assertEqual(ui.filament_action, 'unload')
+        self.assertFalse(ui.actions)
 
     def test_unload_length_temperature_limits_and_no_accidental_feed(self):
         ui = PanelUI(); ui.printer_data = dict(nozzle_min=170, nozzle_max=245, nozzle_target=230)

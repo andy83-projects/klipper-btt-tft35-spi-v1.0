@@ -25,7 +25,7 @@ configured separately in Klipper.
 
 Read [the wiring, installation and bring-up notes](docs/B1_Panel_Bringup.md) before installation.
 Those notes include historical deployment details; earlier test counts and policy
-states describe earlier releases. The current panel suite contains **44 tests**.
+states describe earlier releases. The current panel suite contains **46 tests**.
 
 - [Sample panel configuration](config/sample-b1-panel.cfg) leaves wiring verification
   and status/menu activation disabled until the installation is reviewed.

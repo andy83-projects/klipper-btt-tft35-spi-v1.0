@@ -61,8 +61,10 @@ previous menu; Menu > Back returns to status. Available pages:
   feed are refused; an actually paused print permits filament changes.
   Only the extruder moves, and its G-code state is restored without a return
   move. The nozzle heater remains on; use Heat/Part fan to turn it off when
-  finished, or select Turn nozzle off on the completion screen. Load more or
-  Unload more repeats the confirmation flow; Done returns to the paused status
+  finished, or select Turn nozzle off on the completion screen. Extrude 20 mm
+  and Retract 20 mm (or the chosen feed length) remain available after every
+  operation, defaulting to the last direction. Either repeats the confirmation
+  flow without leaving the controls; Done returns to the paused status
   screen when appropriate. A filament change never resumes the print automatically.
 - Motion/Homing: jog X/Y/Z; 0.1/1/10 mm step sizes; Home XY; Home Z; Home All;
   Motors off. Rotation sets a proposed jog distance; movement requires a
@@ -122,7 +124,7 @@ independently confirm final Linux halt with the present EXP wiring.
 
 ### Validation and latency
 
-44 automated tests cover the display transport, real Klipper command parser,
+46 automated tests cover the display transport, real Klipper command parser,
 UI editor/cancel flows, password redaction, recovery gate, bounds/homing/idle
 guards, heater limits, filament feeding/state restoration, paused dashboard
 resume, automatic heat/feed, heating cancellation/failure/timeout, automatic
