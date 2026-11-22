@@ -252,7 +252,7 @@ class UITests(unittest.TestCase):
             self.assertFalse(ui.waiting)
             self.assertIsNone(ui.filament_phase)
             self.assertEqual(ui.mode, 'filament_done')
-            self.assertEqual(ui.items()[:2], ['Extrude 20 mm', 'Retract 20 mm'])
+            self.assertEqual(ui.items()[:2], ['Extrude more (20 mm)', 'Retract more (20 mm)'])
             self.assertEqual(ui.selection, 0 if action == 'load' else 1)
             self.assertFalse(ui.actions)
             # Select the next operation from the completion controls.

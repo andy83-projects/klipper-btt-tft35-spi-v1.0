@@ -221,8 +221,8 @@ class PanelUI:
                     'Temperature: %d C' % self.filament_temperature,
                     'Feed length: %d mm' % self.filament_length]
         if self.mode == 'filament_done':
-            return ['Extrude %d mm' % self.filament_length,
-                    'Retract %d mm' % self.filament_length,
+            return ['Extrude more (%d mm)' % self.filament_length,
+                    'Retract more (%d mm)' % self.filament_length,
                     'Done', 'Turn nozzle off']
         if self.mode == 'motion':
             return ['Jog X', 'Jog Y', 'Jog Z', 'Step: %g mm' % self.jog_step,

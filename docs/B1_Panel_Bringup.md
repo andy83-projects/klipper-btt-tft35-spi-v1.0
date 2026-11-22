@@ -61,8 +61,8 @@ previous menu; Menu > Back returns to status. Available pages:
   feed are refused; an actually paused print permits filament changes.
   Only the extruder moves, and its G-code state is restored without a return
   move. The nozzle heater remains on; use Heat/Part fan to turn it off when
-  finished, or select Turn nozzle off on the completion screen. Extrude 20 mm
-  and Retract 20 mm (or the chosen feed length) remain available after every
+  finished, or select Turn nozzle off on the completion screen. Extrude more
+  and Retract more show the chosen feed length and remain available after every
   operation, defaulting to the last direction. Either repeats the confirmation
   flow without leaving the controls; Done returns to the paused status
   screen when appropriate. A filament change never resumes the print automatically.
