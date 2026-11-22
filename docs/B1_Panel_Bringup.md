@@ -128,6 +128,24 @@ previous menu; Menu > Back returns to status. Available pages:
 
 ### Local host helper and permissions
 
+### SD boot hardening (CB1)
+
+U-Boot on this CB1 reads the SD card unreliably: after one failed read the
+card stays unreadable until `mmc rescan`, so the stock Armbian `boot.scr`
+often failed (or booted with defaults and waited forever for the wrong
+root). Linux itself reads the card cleanly (full read test, 2026-11-22).
+`scripts/cb1-boot.cmd` replaces `/boot/boot.cmd`: every file access rescans
+and retries up to 20 times, and it never boots with a partially loaded
+environment, device tree, initrd or kernel; on failure it returns so the
+U-Boot `cb1_retry_boot` loop (from `cb1-boot-retries.py`) tries again.
+
+Install (originals kept as `/boot/boot.*.armbian-orig`):
+
+    sudo cp /boot/boot.cmd /boot/boot.cmd.armbian-orig
+    sudo cp /boot/boot.scr /boot/boot.scr.armbian-orig
+    sudo cp cb1-boot.cmd /boot/boot.cmd
+    sudo mkimage -C none -A arm -T script -d /boot/boot.cmd /boot/boot.scr
+
 ### Reset button recovery
 
 The TFT35-SPI button beside the encoder drives EXP2_8, the mainboard MCU
