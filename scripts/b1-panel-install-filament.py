@@ -10,6 +10,8 @@ import subprocess
 import time
 import urllib.request
 
+from b1_panel_plugin import LIBRARY, ensure_links
+
 
 def status():
     url = ('http://127.0.0.1:7125/printer/objects/query?webhooks&print_stats'
@@ -50,11 +52,11 @@ def main():
     if os.geteuid() != 0:
         raise SystemExit('Run this installer with sudo on the CB1')
     stage = Path(__file__).resolve().parent
+    # Plugin layout: one root-owned copy, symlinked into klippy/extras.
     targets = {
-        Path('/home/biqu/klipper/klippy/extras/b1_panel.py'): stage / 'klippy/extras/b1_panel.py',
-        Path('/home/biqu/klipper/klippy/extras/b1_panel_ui.py'): stage / 'klippy/extras/b1_panel_ui.py',
-        Path('/usr/local/lib/b1-panel/b1_panel_ui.py'): stage / 'klippy/extras/b1_panel_ui.py',
-        Path('/usr/local/lib/b1-panel/b1-panel-host.py'): stage / 'scripts/b1-panel-host.py',
+        LIBRARY / 'b1_panel.py': stage / 'klippy/extras/b1_panel.py',
+        LIBRARY / 'b1_panel_ui.py': stage / 'klippy/extras/b1_panel_ui.py',
+        LIBRARY / 'b1-panel-host.py': stage / 'scripts/b1-panel-host.py',
     }
     expected = json.loads((stage / 'previous-sha256.json').read_text())
     for target, source in targets.items():
@@ -78,6 +80,7 @@ def main():
     try:
         for target, source in targets.items():
             install_file(source, target)
+        ensure_links()
         restart()
         wait_ready()
         for target, source in targets.items():

@@ -128,6 +128,19 @@ previous menu; Menu > Back returns to status. Available pages:
 
 ### Local host helper and permissions
 
+### Plugin layout
+
+The panel is installed like other Klipper add-ons, outside the Klipper git
+checkout. `b1_panel.py`, `b1_panel_ui.py` and `b1-panel-host.py` live
+root-owned in `/usr/local/lib/b1-panel`; `~/klipper/klippy/extras/b1_panel.py`
+and `b1_panel_ui.py` are only symlinks to them, listed (with the
+klipper_tmc_autotune links) in `~/klipper/.git/info/exclude`. Moonraker
+therefore does not report the panel as untracked or dirty, and updating or
+soft-recovering Klipper leaves the panel in place. A full re-clone of
+Klipper removes the symlinks; re-run `sudo python3 b1_panel_plugin.py` from
+the staged release to recreate them (it is idempotent and rolls back if
+Klipper or the panel does not come up). Both installers create the links.
+
 `b1-panel-host.service` runs as the dedicated non-login `b1-panel` account,
 with group `biqu` for its local UNIX socket at `/run/b1-panel/host.sock`.
 Root-owned installed code is under `/usr/local/lib/b1-panel`. PolicyKit

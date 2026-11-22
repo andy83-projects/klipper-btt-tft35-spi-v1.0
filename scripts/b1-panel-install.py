@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import urllib.request
 
+from b1_panel_plugin import ensure_links
+
 
 def main():
     assert os.geteuid() == 0, 'Run installer once with sudo'
@@ -32,8 +34,7 @@ def main():
     backup = home / '.local/state/b1-panel' / ('menu-' + stamp)
     backup.mkdir(parents=True)
     targets = {
-        home / 'klipper/klippy/extras/b1_panel.py': stage / 'b1_panel.py',
-        home / 'klipper/klippy/extras/b1_panel_ui.py': stage / 'b1_panel_ui.py',
+        Path('/usr/local/lib/b1-panel/b1_panel.py'): stage / 'b1_panel.py',
         Path('/usr/local/lib/b1-panel/b1-panel-host.py'): stage / 'b1-panel-host.py',
         Path('/usr/local/lib/b1-panel/b1_panel_ui.py'): stage / 'b1_panel_ui.py',
         Path('/etc/systemd/system/b1-panel-host.service'): stage / 'b1-panel-host.service',
@@ -70,6 +71,7 @@ def main():
     else:
         text += '\nstatus_menu: True\n'
     config.write_text(text)
+    ensure_links()  # klippy/extras symlinks, hidden from Klipper's git status
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
     subprocess.run(['systemctl', 'enable', 'b1-panel-host.service'], check=True)
     subprocess.run(['systemctl', 'restart', 'b1-panel-host.service'], check=True)
