@@ -12,7 +12,7 @@ def duration(seconds):
     return '%dh%02dm' % divmod(minutes, 60)
 
 
-def status_lines(snapshot, network, resume_selected=True):
+def status_lines(snapshot, network, footer='Click: Menu', runout=False):
     stats = snapshot.get('print_stats', {})
     state = stats.get('state', 'standby')
     if snapshot.get('pause_resume', {}).get('is_paused'):
@@ -37,6 +37,8 @@ def status_lines(snapshot, network, resume_selected=True):
     for key in ('fan', 'heater_fan heatbreak_fan1', 'temperature_fan SoC_fan'):
         fans.append(round(snapshot.get(key, {}).get('speed', 0.) * 100))
     address = network.get('ip', '')
+    if runout:
+        label = 'Out of filament'
     return [label,
             'Print %s Left%s%s' % (duration(elapsed),
                                   '~' if remaining else ' ', duration(remaining)),
@@ -44,18 +46,33 @@ def status_lines(snapshot, network, resume_selected=True):
                 round(hot.get('temperature', 0)), round(hot.get('target', 0)),
                 round(bed.get('temperature', 0)), round(bed.get('target', 0))),
             'Fans P:%d%% H:%d%% C:%d%%' % tuple(fans),
-            'IP ' + (address or 'Not connected'),
+            'Load new filament,' if runout else 'IP ' + (address or 'Not connected'),
+            'then choose Resume' if runout else
             ('http://' + address + ':81/') if address else 'Fluidd: waiting for IP',
             '%d%% %s' % (min(100, max(0, int(progress * 100))),
                          stats.get('filename', '').rsplit('/', 1)[-1]),
-            ('> Resume print   Menu' if resume_selected else
-             '  Resume print > Menu') if state == 'paused' else 'Click: Menu']
+            footer]
+
+
+def file_label(path):
+    name = path.rsplit('/', 1)[-1]
+    for suffix in ('.gcode', '.gco', '.g'):
+        if name.lower().endswith(suffix):
+            return name[:-len(suffix)]
+    return name
 
 
 class PanelUI:
     # All password characters are entered by rotation, never by G-code.
     CHARACTERS = string.ascii_lowercase + string.ascii_uppercase + string.digits + string.punctuation + ' '
     PASSWORD_KEYS = list(CHARACTERS) + ['<DELETE>', '<DONE>', '<BACK>']
+    # Preheat presets match the installed Orca filament profiles' first layer.
+    PRESETS = (('PLA', 210, 60), ('PETG', 220, 65))
+    Z_STEP = .025
+    Z_LIMIT = 1.
+    BED_COOL = 35
+    STATUS_SHORT = {'Load filament': 'Load', 'Resume print': 'Resume',
+                    'Adjust Z offset': 'Z offset'}
 
     def __init__(self):
         self.mode = 'status'
@@ -92,6 +109,22 @@ class PanelUI:
         self.filament_heat_confirmed = False
         self.filament_previous_target = 0
         self.filament_deadline = 0
+        self.filament_back = 'printer'
+        self.confirm_note = []
+        self.files = []
+        self.print_state = 'standby'
+        self.print_file = ''
+        self.print_duration = 0.
+        self.bed_temperature = 0.
+        self.runout = False
+        self.finished_dismissed = None
+        self.status_keys = ()
+        self.z_offset = 0.
+        self.z_queued = 0.
+        self.z_sent = 0.
+        self.z_pending = False
+        self.zoffset_back = 'printer'
+        self.job_name = None
 
     def public_status(self):
         # Never expose the secret, character editor or action payloads.
@@ -118,6 +151,14 @@ class PanelUI:
         self.network = result
         self.printer_data = result.get('printer', self.printer_data)
         self._filament_progress()
+        job = result.get('job') or {}
+        if self.mode == 'job' and job.get('name') == self.job_name:
+            if job.get('state') == 'failed':
+                self.tell('Calibration failed' if self.job_name == 'calibrate'
+                          else 'Z offset not saved', job.get('error', '')[:30],
+                          'Nothing was saved', back='printer')
+            elif job.get('state') == 'done':
+                self.tell('Saved', 'Printer is restarting', back='status')
         if first:
             self.brightness = result.get('brightness', 100)
             self.draft.update(result.get('ipv4', {}))
@@ -138,6 +179,29 @@ class PanelUI:
                 self.enter('jog')
             else:
                 self.tell(result.get('error', 'Jog failed'), back='jog')
+            return
+        if action == 'z_adjust':
+            self.z_pending = False
+            if result.get('ok'):
+                # Klipper's gcode_move now includes it; avoid double counting.
+                self.z_offset += self.z_sent
+                self.z_sent = 0.
+                self._send_z()
+            else:
+                self.z_sent = self.z_queued = 0.
+                self.tell(result.get('error', 'Z offset not changed'), back='zoffset')
+            return
+        if action == 'files':
+            if result.get('ok'):
+                self.files = result.get('files', [])
+                if self.mode == 'files_loading':
+                    if self.files:
+                        self.enter('files')
+                    else:
+                        self.tell('No files on the printer', 'Send one from OrcaSlicer',
+                                  back='main')
+            elif self.mode == 'files_loading':
+                self.tell(result.get('error', 'Could not list files'), back='main')
             return
         if action == 'filament_heat':
             if self.filament_phase != 'heating':
@@ -180,6 +244,15 @@ class PanelUI:
             self.filament_phase = None
             self.enter('filament_done')
             self.selection = 0 if self.filament_action == 'load' else 1
+        elif action == 'print':
+            self.finished_dismissed = None
+            self.tell('Print starting', 'Bed heats, then it homes',
+                      'and levels before printing', back='status')
+        elif action == 'preheat':
+            self.tell('Preheating', 'Temperatures show on the', 'status screen', back='status')
+        elif action in ('calibrate', 'z_save'):
+            self.job_name = action
+            self.enter('job')
         elif action in ('home', 'pause', 'resume', 'cancel', 'heater',
                         'fan', 'motors_off', 'emergency'):
             self.tell('Command accepted', back=self.action_back)
@@ -212,15 +285,46 @@ class PanelUI:
                                  target=self.filament_previous_target))
         self.tell('Cancelling; nothing fed', back='printer')
 
+    def finished_key(self):
+        return (self.print_file, round(self.print_duration))
+
+    def finished(self):
+        return (self.print_state == 'complete' and not self.printer_data.get('paused')
+                and self.finished_dismissed != self.finished_key())
+
+    def status_items(self):
+        if self.printer_data.get('paused'):
+            items = [('Resume print', 'resume'), ('Menu', 'menu')]
+            if self.runout:
+                items.insert(0, ('Load filament', 'load'))
+            return items
+        if self.finished():
+            items = [('Print again', 'again')] if self.print_file else []
+            if abs(self.z_offset) >= .001:
+                items.append(('Save Z offset', 'zsave'))
+            return items + [('Done', 'done')]
+        if self.print_state == 'printing':
+            return [('Menu', 'menu'), ('Adjust Z offset', 'zoffset')]
+        return [('Menu', 'menu')]
+
+    def printing_now(self):
+        return self.printer_data.get('paused') or self.print_state in ('printing', 'paused')
+
     def items(self):
-        if self.mode == 'status' and self.printer_data.get('paused'):
-            return ['Resume print', 'Menu']
+        if self.mode == 'status':
+            items = [label for label, _ in self.status_items()]
+            return items if len(items) > 1 else []
         if self.mode == 'main':
-            return ['Printer controls', 'Network', 'Text brightness', 'Shut down', 'Back']
+            return ['Print a file', 'Printer controls', 'Network', 'Text brightness',
+                    'Shut down', 'Back']
+        if self.mode == 'files':
+            return [f['name'] for f in self.files] + ['Back']
         if self.mode == 'printer':
-            return ['Motion / Homing', 'Heat / Part fan', 'Pause print',
-                    'Resume print', 'Cancel print', 'Emergency stop',
-                    'Load filament', 'Unload filament', 'Back']
+            return ['Motion / Homing', 'Heat / Part fan', 'Adjust Z offset',
+                    'Calibrate bed', 'Pause print', 'Resume print', 'Cancel print',
+                    'Emergency stop', 'Load filament', 'Unload filament', 'Back']
+        if self.mode == 'zoffset_menu':
+            return ['Save for future prints', 'Adjust again', 'Back']
         if self.mode == 'filament':
             return ['Heat and ' + self.filament_action,
                     'Temperature: %d C' % self.filament_temperature,
@@ -233,7 +337,8 @@ class PanelUI:
             return ['Jog X', 'Jog Y', 'Jog Z', 'Step: %g mm' % self.jog_step,
                     'Home XY', 'Home Z', 'Home All', 'Motors off', 'Back']
         if self.mode == 'heat':
-            return ['Nozzle target', 'Bed target', 'Part fan %', 'All heaters off', 'Back']
+            return ['Preheat %s %d/%d' % preset for preset in self.PRESETS] + [
+                    'Cool down', 'Nozzle target', 'Bed target', 'Part fan %', 'Back']
         if self.mode == 'action_confirm':
             return ['Confirm', 'Back']
         if self.mode == 'network':
@@ -272,6 +377,11 @@ class PanelUI:
                 maximum, self.filament_temperature + delta * 5))
         elif self.mode == 'filament_length':
             self.filament_length = max(5, min(50, self.filament_length + delta * 5))
+        elif self.mode == 'zoffset':
+            current = self.z_offset + self.z_sent + self.z_queued
+            wanted = max(-self.Z_LIMIT, min(self.Z_LIMIT, current + delta * self.Z_STEP))
+            self.z_queued = round(self.z_queued + wanted - current, 3)
+            self._send_z()
         elif self.mode == 'jog':
             self.jog_delta = round(max(-50., min(50., self.jog_delta + delta * self.jog_step)), 3)
         elif self.mode == 'target':
@@ -294,28 +404,77 @@ class PanelUI:
             return
         mode, selected = self.mode, self.selection
         if mode == 'status':
-            if self.printer_data.get('paused') and selected == 0:
+            items = self.status_items()
+            key = items[selected % len(items)][1]
+            if key == 'resume':
                 self.confirm('Resume print?', dict(action='resume'), back='status')
+            elif key == 'load':
+                self._start_filament('load', back='status')
+            elif key == 'zoffset':
+                self._enter_zoffset('status')
+            elif key == 'again':
+                self.confirm('Print it again?', dict(action='print', filename=self.print_file),
+                             back='status', note=[file_label(self.print_file),
+                                                  'Remove the old print first'])
+            elif key == 'zsave':
+                self._confirm_zsave('status')
+            elif key == 'done':
+                self.finished_dismissed = self.finished_key()
+                self.selection = 0
             else:
                 self.enter('main')
         elif mode == 'main':
-            self.enter(['printer', 'network', 'brightness', 'shutdown_confirm', 'status'][selected])
-        elif mode == 'printer':
-            if selected in (0, 1, 8):
-                self.enter({0: 'motion', 1: 'heat', 8: 'main'}[selected])
-            elif selected in (6, 7):
-                self.filament_action = 'load' if selected == 6 else 'unload'
-                minimum = self.printer_data.get('nozzle_min', 170)
-                maximum = self.printer_data.get('nozzle_max', 245)
-                self.filament_temperature = max(minimum, min(maximum,
-                    round(self.printer_data.get('nozzle_target') or 210)))
-                self.enter('filament')
+            choice = self.items()[selected]
+            if choice == 'Print a file':
+                self.files = []
+                self.actions.append(dict(action='files'))
+                self.enter('files_loading')
             else:
-                name = {2: 'pause', 3: 'resume', 4: 'cancel', 5: 'emergency'}[selected]
+                self.enter({'Printer controls': 'printer', 'Network': 'network',
+                            'Text brightness': 'brightness',
+                            'Shut down': 'shutdown_confirm'}.get(choice, 'status'))
+        elif mode == 'files_loading':
+            self.enter('main')
+        elif mode == 'files':
+            if selected >= len(self.files):
+                self.enter('main')
+            else:
+                chosen = self.files[selected]
+                self.confirm('Print this file?', dict(action='print', filename=chosen['path']),
+                             back='files', note=[chosen['name'], 'Remove anything on the bed'])
+        elif mode == 'printer':
+            choice = self.items()[selected]
+            if choice in ('Load filament', 'Unload filament'):
+                self._start_filament('load' if choice == 'Load filament' else 'unload')
+            elif choice == 'Adjust Z offset':
+                self._enter_zoffset('printer')
+            elif choice == 'Calibrate bed':
+                self.confirm('Calibrate bed? ~10 min', dict(action='calibrate'),
+                             note=['Bed must be empty', 'Heats bed to 60 C first',
+                                   'Printer restarts when done'])
+            elif choice in ('Pause print', 'Resume print', 'Cancel print', 'Emergency stop'):
+                name = {'Pause print': 'pause', 'Resume print': 'resume',
+                        'Cancel print': 'cancel', 'Emergency stop': 'emergency'}[choice]
                 self.confirm(name.capitalize() + ' print?', dict(action=name))
+            else:
+                self.enter({'Motion / Homing': 'motion', 'Heat / Part fan': 'heat'}.get(choice, 'main'))
+        elif mode == 'zoffset':
+            if self.printing_now():
+                self.enter('status')
+            else:
+                self.enter('zoffset_menu')
+        elif mode == 'zoffset_menu':
+            if selected == 0:
+                self._confirm_zsave(self.zoffset_back)
+            elif selected == 1:
+                self.enter('zoffset')
+            else:
+                self.enter(self.zoffset_back)
+        elif mode == 'job':
+            self.enter('status')
         elif mode == 'filament':
             if selected == 3:
-                self.enter('printer')
+                self.enter(self.filament_back)
             elif selected == 0:
                 if self.waiting or self.filament_phase:
                     return
@@ -379,12 +538,18 @@ class PanelUI:
             else:
                 self.enter('motion')
         elif mode == 'heat':
-            if selected < 3:
-                self.target_kind = ['nozzle', 'bed', 'fan'][selected]
+            presets = len(self.PRESETS)
+            if selected < presets:
+                material, nozzle, bed = self.PRESETS[selected]
+                self.confirm('Preheat for %s?' % material,
+                             dict(action='preheat', nozzle=nozzle, bed=bed), back='status',
+                             note=['Nozzle %d C, bed %d C' % (nozzle, bed)])
+            elif selected == presets:
+                self.confirm('Turn all heaters off?', dict(action='heater', heater='all', target=0))
+            elif selected < presets + 4:
+                self.target_kind = ['nozzle', 'bed', 'fan'][selected - presets - 1]
                 self.target_value = round(self.printer_data.get(self.target_kind + '_target', 0))
                 self.enter('target')
-            elif selected == 3:
-                self.confirm('Turn all heaters off?', dict(action='heater', heater='all', target=0))
             else:
                 self.enter('printer')
         elif mode == 'target':
@@ -555,10 +720,53 @@ class PanelUI:
             self.printer_data['paused'] = (
                 snapshot.get('pause_resume', {}).get('is_paused', False)
                 or snapshot.get('print_stats', {}).get('state') == 'paused')
-        if not self.printer_data.get('paused') and self.mode == 'status':
-            self.selection = 0
+        stats = snapshot.get('print_stats')
+        if stats is not None:
+            self.print_state = stats.get('state', 'standby')
+            self.print_file = stats.get('filename', '')
+            self.print_duration = stats.get('print_duration', 0.)
+        if 'gcode_move' in snapshot:
+            self.z_offset = snapshot['gcode_move'].get('homing_origin', [0, 0, 0])[2]
+        if 'heater_bed' in snapshot:
+            self.bed_temperature = snapshot['heater_bed'].get('temperature', 0.)
+        sensors = [v for k, v in snapshot.items() if k.startswith('filament_switch_sensor')]
+        self.runout = bool(self.printer_data.get('paused') and any(
+            v.get('enabled', True) and not v.get('filament_detected', True) for v in sensors))
         if self.mode == 'status':
-            return status_lines(snapshot, self.network, self.selection == 0)
+            items = self.status_items()
+            keys = tuple(key for _, key in items)
+            if keys != self.status_keys:
+                self.status_keys, self.selection = keys, 0
+            if self.finished():
+                bed = round(self.bed_temperature)
+                return ['Print complete!', file_label(self.print_file),
+                        'Took ' + duration(self.print_duration),
+                        ('Bed %d C: let it cool' % bed) if bed > self.BED_COOL
+                        else 'Bed is cool: remove print', ''] + [
+                        ('> ' if n == self.selection else '  ') + label
+                        for n, (label, _) in enumerate(items)]
+            if len(items) == 1:
+                footer = 'Click: ' + items[0][0]
+            else:
+                def join(short):
+                    return '  '.join(('> ' if n == self.selection else '  ')
+                                     + (self.STATUS_SHORT.get(label, label) if short else label)
+                                     for n, (label, _) in enumerate(items))
+                footer = join(False) if len(join(False)) <= 30 else join(True)
+            return status_lines(snapshot, self.network, footer, self.runout)
+        if self.mode == 'zoffset':
+            shown = self.z_offset + self.z_sent + self.z_queued
+            return ['Z offset (live)', '%+.3f mm' % shown,
+                    'Right: nozzle up', '  (less squished)',
+                    'Left: nozzle down', '  (more squished)',
+                    'Each click %.3f mm' % self.Z_STEP, 'Click: done']
+        if self.mode == 'files_loading':
+            return ['Loading files...', 'Click: back']
+        if self.mode == 'job':
+            title = 'Calibrating bed...' if self.job_name == 'calibrate' else 'Saving Z offset...'
+            return [title, 'Do not touch the printer',
+                    'About 10 minutes' if self.job_name == 'calibrate' else '',
+                    'Printer restarts when done', '', 'Click: status screen']
         if self.mode == 'filament_temp':
             return ['Filament temperature', '%d C' % self.filament_temperature,
                     'Rotate: change by 5', 'Click: accept']
@@ -635,12 +843,15 @@ class PanelUI:
                   'manual': 'Manual IPv4', 'ip_review': 'Review IPv4',
                   'octet_review': '.'.join(map(str, self.octets)),
                   'apply_review': self.ssid, 'keep': 'Connection working?',
-                  'shutdown_confirm': 'Shut down host?'}
+                  'shutdown_confirm': 'Shut down host?', 'files': 'Print a file',
+                  'zoffset_menu': 'Z offset %+.3f mm' % self.z_offset}
         items = self.items()
-        start = max(0, self.selection - 5)
-        lines = [titles.get(self.mode, self.mode)]
+        note = self.confirm_note if self.mode == 'action_confirm' else []
+        visible = 6 - len(note)
+        start = max(0, self.selection - visible + 1)
+        lines = [titles.get(self.mode, self.mode)] + note
         lines += [('> ' if n == self.selection else '  ') + item
-                  for n, item in enumerate(items) if start <= n < start + 6]
+                  for n, item in enumerate(items) if start <= n < start + visible]
         if self.mode == 'shutdown_confirm':
             lines += ['Only when idle and cooled']
         elif self.mode in ('ip_review', 'apply_review'):
@@ -650,10 +861,36 @@ class PanelUI:
                 lines += ['Apply may disconnect SSH']
         return lines[:8]
 
-    def confirm(self, title, action, back='printer'):
+    def confirm(self, title, action, back='printer', note=()):
         self.confirm_title, self.confirm_action = title, action
+        self.confirm_note = list(note)
         self.action_back = back
         self.enter('action_confirm')
+
+    def _start_filament(self, action, back='printer'):
+        self.filament_action = action
+        self.filament_back = back
+        minimum = self.printer_data.get('nozzle_min', 170)
+        maximum = self.printer_data.get('nozzle_max', 245)
+        self.filament_temperature = max(minimum, min(maximum,
+            round(self.printer_data.get('nozzle_target') or 210)))
+        self.enter('filament')
+
+    def _enter_zoffset(self, back):
+        self.zoffset_back = back
+        self.enter('zoffset')
+
+    def _confirm_zsave(self, back):
+        self.confirm('Save Z offset %+.3f?' % self.z_offset, dict(action='z_save'),
+                     back=back, note=['Used for all future prints', 'Printer restarts (~30 s)'])
+
+    def _send_z(self):
+        # One adjustment in flight; extra rotation accumulates and follows.
+        if self.z_pending or abs(self.z_queued) < .0005:
+            return
+        self.z_sent, self.z_queued = self.z_queued, 0.
+        self.z_pending = True
+        self.actions.append(dict(action='z_adjust', delta=self.z_sent))
 
 
 def validate_ipv4(settings):

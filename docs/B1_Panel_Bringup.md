@@ -36,11 +36,38 @@ from print duration and progress, marked `~`, and stays unknown at the start.
 Press to open Menu, rotate to select, press to enter. Back returns to the
 previous menu; Menu > Back returns to status. Available pages:
 
-- Printer controls: Motion/Homing; Heat/Part fan; Pause; Resume; Cancel;
-  Emergency stop; Load filament; Unload filament; Back.
-- When paused (including a runout pause), the status screen offers Resume
-  print. Click to review and confirm, or rotate to Menu to reach the filament
-  controls. Resume uses the printer's existing `RESUME` macro; it does not
+- Print a file: lists the newest 30 G-code files Moonraker holds (newest
+  first). Choosing one shows the name and "Remove anything on the bed" with
+  Back selected; Confirm starts it through Moonraker. The host only starts a
+  file Moonraker currently lists, and only when the printer is idle.
+- Printer controls: Motion/Homing; Heat/Part fan; Adjust Z offset; Calibrate
+  bed; Pause; Resume; Cancel; Emergency stop; Load filament; Unload filament;
+  Back.
+- While printing, the status screen offers Menu and Adjust Z offset.
+- When paused, the status screen offers Resume print. Click to review and
+  confirm, or rotate to Menu to reach the filament controls. When a filament
+  switch sensor reports no filament during a pause, the status screen reads
+  "Out of filament / Load new filament, then choose Resume" and offers
+  Load, Resume and Menu; Load opens the Load filament setup directly.
+- When a print completes, the status screen shows "Print complete!", the file,
+  the print time and the bed temperature ("let it cool" until it is at or
+  below 35 C, then "remove print"). It offers Print again (confirmation with
+  "Remove the old print first"), Save Z offset when the live offset is not
+  zero, and Done, which returns to the normal status screen.
+- Adjust Z offset: each encoder detent babysteps 0.025 mm immediately with
+  `SET_GCODE_OFFSET Z_ADJUST=... MOVE=1` (MOVE only when Z is homed); right
+  raises the nozzle, left lowers it. Total offset is limited to +/-1 mm, and
+  only one adjustment is in flight at a time; extra rotation accumulates. While
+  printing, click returns to status. When idle, click offers Save for future
+  prints (`Z_OFFSET_APPLY_PROBE` then `SAVE_CONFIG`, which restarts Klipper),
+  Adjust again and Back.
+- Calibrate bed: confirmation warns the bed must be empty. The host heats the
+  bed to 60 C, homes, runs `Z_TILT_ADJUST` and re-homes Z (when z_tilt is
+  configured), runs a full-bed mesh, saves it as the `default` profile, turns
+  the bed off and runs `SAVE_CONFIG`. When a KAMP-style macro wraps
+  BED_MESH_CALIBRATE, its renamed original is called so stale object outlines
+  never shrink the saved mesh. The job runs in the host helper's background so
+  the panel stays responsive; a failure is shown and nothing is saved. Resume uses the printer's existing `RESUME` macro; it does not
   bypass that macro's heater/runout checks or simulate a runout sensor.
 - Load/Unload: select the option and confirm Heat and load/Heat and unload.
   Insert filament into the extruder before confirming Load; for Unload, wait
@@ -78,7 +105,10 @@ previous menu; Menu > Back returns to status. Available pages:
   destination within its configured limits. Z-only homing requires XY homed.
   The jog restores the previous G-code state without a return move. Homing
   uses the existing G28 configuration, never force_move or fake homing.
-- Heat/Part fan: nozzle and bed targets, part fan percentage, all heaters off.
+- Heat/Part fan: Preheat PLA 210/60 and Preheat PETG 220/65 (matching the
+  installed Orca filament profiles' first layer; refused while a print is
+  running or paused), Cool down (all heaters off), nozzle and bed targets,
+  part fan percentage, Back.
   Targets are capped below configured maximum temperatures. Automatic hotend
   and CB1 fans are displayed but not overridden. Consequential actions have
   a confirmation (Confirm, then Back) with Back selected by default.

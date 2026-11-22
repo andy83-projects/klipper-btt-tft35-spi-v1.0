@@ -10,10 +10,15 @@ from pathlib import Path
 import pwd
 import socket
 import struct
+import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
+MOONRAKER = 'http://127.0.0.1:7125'
+GCODE_SUFFIXES = ('.gcode', '.gco', '.g')
 NM = 'org.freedesktop.NetworkManager'
 BASE = '/org/freedesktop/NetworkManager'
 PROPS = 'org.freedesktop.DBus.Properties'
@@ -29,6 +34,7 @@ class Host:
         self.config = config
         self.device = self.nm.GetDeviceByIpIface(config.get('interface', 'wlan0'))
         self.pending = None
+        self.job = None
         self.preferences = Path('/var/lib/b1-panel/preferences.json')
         self.brightness = 100
         if self.preferences.exists():
@@ -117,17 +123,29 @@ class Host:
         except Exception:
             printer = {}
         return dict(ip=ip, ssid=ssid, state=int(p['State']), brightness=self.brightness,
+                    job=dict(self.job) if self.job else None,
                     ipv4=dict(method=method, address=ip or '192.168.1.100',
                               prefix=prefix, gateway=gateway, dns=dns),
                     checkpoint=bool(self.pending), changes_allowed=self.changes_allowed(),
                     networks=self.networks(), printer=printer)
 
     def printer_snapshot(self):
-        url = ('http://127.0.0.1:7125/printer/objects/query?print_stats&idle_timeout'
-               '&extruder&heater_bed&toolhead&fan&configfile&pause_resume')
+        url = (MOONRAKER + '/printer/objects/query?print_stats&idle_timeout'
+               '&extruder&heater_bed&toolhead&fan&configfile&pause_resume&gcode_move')
         status = json.load(urllib.request.urlopen(url, timeout=4))['result']['status']
         cfg = status['configfile']['config']
+        sections = {name.lower(): values for name, values in cfg.items()}
+        # KAMP-style wrappers rename the real command; call it directly so a
+        # stale object list can never shrink the saved full-bed mesh.
+        wrapper = sections.get('gcode_macro bed_mesh_calibrate', {})
         return dict(state=status['print_stats']['state'],
+                    filename=status['print_stats'].get('filename', ''),
+                    z_offset=status['gcode_move']['homing_origin'][2],
+                    has_probe='probe' in sections or 'bltouch' in sections,
+                    has_mesh='bed_mesh' in sections,
+                    has_z_tilt='z_tilt' in sections,
+                    mesh_command=wrapper.get('rename_existing', 'BED_MESH_CALIBRATE').strip()
+                    or 'BED_MESH_CALIBRATE',
                     paused=status['pause_resume']['is_paused'],
                     busy=status['idle_timeout']['state'] == 'Printing',
                     homed=status['toolhead']['homed_axes'],
@@ -143,6 +161,60 @@ class Host:
                     nozzle_target=status['extruder']['target'],
                     bed_target=status['heater_bed']['target'],
                     fan_target=round(status['fan']['speed'] * 100))
+
+    def gcode(self, script, timeout):
+        req = urllib.request.Request(MOONRAKER + '/printer/gcode/script',
+            data=json.dumps({'script': script}).encode(),
+            headers={'Content-Type': 'application/json'})
+        json.load(urllib.request.urlopen(req, timeout=timeout))
+
+    def gcode_files(self):
+        listing = json.load(urllib.request.urlopen(
+            MOONRAKER + '/server/files/list?root=gcodes', timeout=6))['result']
+        files = [f for f in listing if f['path'].lower().endswith(GCODE_SUFFIXES)]
+        return sorted(files, key=lambda f: -f.get('modified', 0))
+
+    def start_print(self, request):
+        self.require_idle()
+        if self.job and self.job['state'] == 'running':
+            raise ValueError('Wait for calibration to finish')
+        filename = request.get('filename')
+        # Only a file Moonraker currently lists; never a caller-built path.
+        if not isinstance(filename, str) or filename not in {
+                f['path'] for f in self.gcode_files()}:
+            raise ValueError('File no longer on the printer')
+        req = urllib.request.Request(MOONRAKER + '/printer/print/start?filename='
+                                     + urllib.parse.quote(filename), data=b'',
+                                     method='POST')
+        json.load(urllib.request.urlopen(req, timeout=10))
+
+    def start_job(self, request):
+        self.require_idle()
+        if self.job and self.job['state'] == 'running':
+            raise ValueError('Printer is already busy')
+        scripts = build_job_scripts(request, self.printer_snapshot())
+        self.job = dict(name=request['action'], state='running', error='')
+        threading.Thread(target=self._run_job, args=(self.job, scripts),
+                         daemon=True).start()
+
+    def _run_job(self, job, scripts):
+        try:
+            for script in scripts:
+                try:
+                    self.gcode(script, timeout=1800)
+                except Exception:
+                    # SAVE_CONFIG restarts Klipper, which drops this request.
+                    if script != 'SAVE_CONFIG':
+                        raise
+            job['state'] = 'done'
+        except urllib.error.HTTPError as exc:
+            try:
+                message = json.load(exc)['error']['message']
+            except Exception:
+                message = 'Printer reported an error'
+            job.update(state='failed', error=str(message)[:60])
+        except Exception:
+            job.update(state='failed', error='Printer did not respond')
 
     def printer_action(self, request):
         data = self.printer_snapshot()
@@ -287,13 +359,51 @@ class Host:
             login = self.dbus.Interface(self.bus.get_object('org.freedesktop.login1',
                 '/org/freedesktop/login1'), 'org.freedesktop.login1.Manager')
             login.PowerOff(False)
+        elif action == 'files':
+            return dict(ok=True, files=[dict(path=f['path'], name=file_label(f['path']))
+                                        for f in self.gcode_files()[:30]])
+        elif action == 'print':
+            self.start_print(request)
+        elif action in ('calibrate', 'z_save'):
+            self.start_job(request)
         elif action in ('jog', 'home', 'pause', 'resume', 'cancel', 'heater',
                         'fan', 'motors_off', 'emergency', 'load', 'unload',
-                        'filament_heat', 'filament_stop'):
+                        'filament_heat', 'filament_stop', 'preheat', 'z_adjust'):
             self.printer_action(request)
         else:
             raise ValueError('Unknown panel action')
         return dict(ok=True)
+
+
+def file_label(path):
+    name = path.rsplit('/', 1)[-1]
+    for suffix in GCODE_SUFFIXES:
+        if name.lower().endswith(suffix):
+            return name[:-len(suffix)]
+    return name
+
+
+def build_job_scripts(request, data):
+    """Long calibration/save jobs; pure function for no-motion testing."""
+    action = request['action']
+    if data['state'] in ('printing', 'paused') or data.get('busy'):
+        raise ValueError('Printer must be idle')
+    if not data['has_probe']:
+        raise ValueError('No probe configured')
+    if action == 'calibrate':
+        if not data['has_mesh']:
+            raise ValueError('No bed mesh configured')
+        bed = min(60, data['bed_max'])
+        lines = ['M140 S%d' % bed, 'G28', 'M190 S%d' % bed]
+        if data['has_z_tilt']:
+            lines += ['Z_TILT_ADJUST', 'G28 Z']
+        lines += [data['mesh_command'], 'BED_MESH_PROFILE SAVE=default', 'M140 S0']
+        return ['\n'.join(lines), 'SAVE_CONFIG']
+    if action == 'z_save':
+        if abs(data['z_offset']) < .001:
+            raise ValueError('Z offset unchanged')
+        return ['Z_OFFSET_APPLY_PROBE', 'SAVE_CONFIG']
+    raise ValueError('Unknown printer job')
 
 
 def build_printer_command(request, data):
@@ -389,6 +499,25 @@ def build_printer_command(request, data):
         if not isinstance(percent, (int, float)) or not math.isfinite(percent) or not 0 <= percent <= 100:
             raise ValueError('Invalid fan percentage')
         return 'M106 S%d' % round(percent * 255 / 100)
+    if action == 'preheat':
+        if data['state'] in ('printing', 'paused') or data['busy']:
+            raise ValueError('Not while printing')
+        nozzle, bed = request.get('nozzle'), request.get('bed')
+        for value, limit in ((nozzle, data['nozzle_max']), (bed, data['bed_max'])):
+            if (not isinstance(value, (int, float)) or not math.isfinite(value)
+                    or not 0 < value <= limit):
+                raise ValueError('Preheat exceeds heater limit')
+        return 'M104 S%.1f\nM140 S%.1f' % (nozzle, bed)
+    if action == 'z_adjust':
+        delta = request.get('delta')
+        if (not isinstance(delta, (int, float)) or not math.isfinite(delta)
+                or not 0 < abs(delta) <= .2):
+            raise ValueError('Invalid Z offset step')
+        if abs(data['z_offset'] + delta) > 1.0001:
+            raise ValueError('Z offset limit is 1 mm')
+        # Babystep: move the nozzle now when Z is homed; otherwise only store.
+        return 'SET_GCODE_OFFSET Z_ADJUST=%.3f%s' % (
+            delta, ' MOVE=1' if 'z' in data['homed'] else '')
     if action == 'emergency':
         return 'M112'
     raise ValueError('Unknown printer action')

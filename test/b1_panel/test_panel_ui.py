@@ -1,8 +1,10 @@
 import importlib.util
+import io
 import json
 import pathlib
 import sys
 import unittest
+import unittest.mock
 from unittest.mock import Mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -91,9 +93,9 @@ class UITests(unittest.TestCase):
         self.assertIn('rolled back', ui.lines({})[0])
 
     def test_shutdown_requires_deliberate_confirm_default_cancel(self):
-        ui = PanelUI(); ui.enter('main'); ui.selection = 3; ui.click()
+        ui = PanelUI(); ui.enter('main'); ui.selection = ui.items().index('Shut down'); ui.click()
         ui.click(); self.assertEqual(ui.mode, 'main'); self.assertFalse(ui.actions)
-        ui.selection = 3; ui.click(); ui.selection = 0; ui.click()
+        ui.selection = ui.items().index('Shut down'); ui.click(); ui.selection = 0; ui.click()
         self.assertEqual(ui.actions, [{'action': 'poweroff'}])
         self.assertIn('Wait at least 30 seconds', ui.lines({}))
         self.assertNotIn('Safe to switch off', ui.lines({}))
@@ -237,7 +239,7 @@ class UITests(unittest.TestCase):
         hot = dict(state='paused', paused=True, nozzle_target=210,
                    nozzle_temperature=210, can_extrude=True)
         ui = PanelUI(); ui.printer_data = dict(hot)
-        ui.enter('printer'); ui.selection = 6; ui.click()
+        ui.enter('printer'); ui.selection = ui.items().index('Load filament'); ui.click()
         self.assertEqual(ui.items()[-1], 'Back')
         self.assertEqual(ui.selection, 3)  # cursor starts on Back
         ui.selection = 0; ui.click()
@@ -331,7 +333,7 @@ class UITests(unittest.TestCase):
         self.assertEqual(ui.actions, [dict(action='resume')])
         ui.result('resume', {'ok': True}); ui.click()
         ui.lines(dict(print_stats=dict(state='printing'), pause_resume=dict(is_paused=False)))
-        self.assertEqual(ui.lines({})[-1], 'Click: Menu')
+        self.assertEqual(ui.lines({})[-1], '> Menu    Adjust Z offset')
         ui.click(); self.assertEqual(ui.mode, 'main')
 
     def test_resume_obeys_actual_pause_state_after_idle_timeout(self):
@@ -376,7 +378,7 @@ class UITests(unittest.TestCase):
         self.assertIn('in progress', ui.lines({})[0])
 
     def test_cancel_heating_ignores_late_ack_and_never_feeds(self):
-        ui = PanelUI(); ui.enter('printer'); ui.selection = 6; ui.click()
+        ui = PanelUI(); ui.enter('printer'); ui.selection = ui.items().index('Load filament'); ui.click()
         ui.selection = 0; ui.click(); ui.actions.clear()
         ui.click()
         self.assertEqual(ui.actions, [dict(action='filament_stop', target=0)])
@@ -390,7 +392,7 @@ class UITests(unittest.TestCase):
     def test_heat_failure_timeout_changed_target_or_started_print_never_feeds(self):
         for scenario in ('failure', 'timeout', 'target', 'printing'):
             with self.subTest(scenario=scenario):
-                ui = PanelUI(); ui.enter('printer'); ui.selection = 6; ui.click()
+                ui = PanelUI(); ui.enter('printer'); ui.selection = ui.items().index('Load filament'); ui.click()
                 ui.selection = 0; ui.click(); ui.actions.clear()
                 if scenario == 'failure':
                     ui.result('filament_heat', dict(ok=False, error='No heater'))
@@ -415,6 +417,208 @@ class UITests(unittest.TestCase):
         for target in (0, 250, float('nan')):
             with self.assertRaises(ValueError):
                 host_module.build_printer_command(dict(action='filament_heat', target=target), data)
+
+
+class EasyUseTests(unittest.TestCase):
+    HOST = dict(state='standby', busy=False, paused=False, nozzle_max=245, bed_max=125,
+                homed='xyz', z_offset=0., has_probe=True, has_mesh=True,
+                has_z_tilt=True, mesh_command='_BED_MESH_CALIBRATE')
+
+    def test_print_a_file_lists_confirms_and_starts(self):
+        ui = PanelUI(); ui.enter('main')
+        self.assertEqual(ui.items()[0], 'Print a file')
+        ui.click()
+        self.assertEqual(ui.actions.pop(), dict(action='files'))
+        self.assertIn('Loading', ui.lines({})[0])
+        files = [dict(path='BB1ABL_Boost cup.gcode', name='BB1ABL_Boost cup'),
+                 dict(path='toys/egg.gcode', name='egg')]
+        ui.result('files', dict(ok=True, files=files))
+        self.assertEqual(ui.items(), ['BB1ABL_Boost cup', 'egg', 'Back'])
+        ui.selection = 1; ui.click()
+        self.assertEqual(ui.mode, 'action_confirm')
+        lines = ui.lines({})
+        self.assertEqual(lines[:3], ['Print this file?', 'egg', 'Remove anything on the bed'])
+        self.assertEqual(lines[-1], '> Back')  # stray click stays harmless
+        ui.click(); self.assertFalse(ui.actions); self.assertEqual(ui.mode, 'files')
+        ui.selection = 1; ui.click(); ui.selection = 0; ui.click()
+        self.assertEqual(ui.actions.pop(), dict(action='print', filename='toys/egg.gcode'))
+        ui.result('print', dict(ok=True))
+        self.assertIn('Print starting', ui.lines({})[0])
+        ui.click(); self.assertEqual(ui.mode, 'status')
+
+    def test_empty_file_list_explains_what_to_do(self):
+        ui = PanelUI(); ui.enter('main'); ui.click(); ui.actions.clear()
+        ui.result('files', dict(ok=True, files=[]))
+        self.assertIn('No files', ui.lines({})[0])
+        ui.click(); self.assertEqual(ui.mode, 'main')
+
+    def test_host_lists_newest_gcode_and_only_starts_listed_files(self):
+        host = host_module.Host.__new__(host_module.Host); host.job = None
+        listing = [dict(path='old.gcode', modified=1), dict(path='notes.txt', modified=9),
+                   dict(path='sub/new.gcode', modified=5)]
+        host.require_idle = Mock()
+        with unittest.mock.patch.object(host_module.urllib.request, 'urlopen') as urlopen:
+            urlopen.return_value = io.BytesIO(json.dumps(dict(result=listing)).encode())
+            result = host.dispatch(dict(action='files'))
+            self.assertEqual(result['files'], [dict(path='sub/new.gcode', name='new'),
+                                               dict(path='old.gcode', name='old')])
+            urlopen.side_effect = [io.BytesIO(json.dumps(dict(result=listing)).encode())]
+            with self.assertRaises(ValueError):
+                host.start_print(dict(filename='../../etc/passwd.gcode'))
+            urlopen.side_effect = [io.BytesIO(json.dumps(dict(result=listing)).encode()),
+                                   io.BytesIO(b'{"result": "ok"}')]
+            host.start_print(dict(filename='sub/new.gcode'))
+            request = urlopen.call_args[0][0]
+            self.assertEqual(request.full_url,
+                             'http://127.0.0.1:7125/printer/print/start?filename=sub/new.gcode')
+            self.assertEqual(request.get_method(), 'POST')
+
+    def test_preheat_presets_and_cool_down(self):
+        ui = PanelUI(); ui.enter('heat')
+        self.assertEqual(ui.items()[:3], ['Preheat PLA 210/60', 'Preheat PETG 220/65', 'Cool down'])
+        self.assertEqual(ui.items()[-1], 'Back')
+        ui.selection = 1; ui.click(); ui.selection = 0; ui.click()
+        self.assertEqual(ui.actions.pop(), dict(action='preheat', nozzle=220, bed=65))
+        ui.enter('heat'); ui.selection = 2; ui.click(); ui.selection = 0; ui.click()
+        self.assertEqual(ui.actions.pop(), dict(action='heater', heater='all', target=0))
+        command = host_module.build_printer_command(dict(action='preheat', nozzle=210, bed=60), self.HOST)
+        self.assertEqual(command, 'M104 S210.0\nM140 S60.0')
+        for change, request in [(dict(state='printing'), dict(nozzle=210, bed=60)),
+                                (dict(busy=True), dict(nozzle=210, bed=60)),
+                                ({}, dict(nozzle=300, bed=60)), ({}, dict(nozzle=210, bed=200)),
+                                ({}, dict(nozzle=float('nan'), bed=60))]:
+            with self.assertRaises(ValueError):
+                host_module.build_printer_command(dict(action='preheat', **request),
+                                                  dict(self.HOST, **change))
+
+    def test_live_z_offset_from_printing_status(self):
+        ui = PanelUI()
+        ui.lines(dict(print_stats=dict(state='printing'), gcode_move=dict(homing_origin=[0, 0, 0])))
+        ui.rotate(1); ui.click()
+        self.assertEqual(ui.mode, 'zoffset')
+        ui.rotate(1)
+        self.assertEqual(ui.actions.pop(), dict(action='z_adjust', delta=.025))
+        ui.rotate(1); ui.rotate(1)  # accumulates while the first is in flight
+        self.assertFalse(ui.actions)
+        self.assertIn('+0.075', ui.lines({})[1])
+        ui.result('z_adjust', dict(ok=True))
+        self.assertEqual(ui.actions.pop(), dict(action='z_adjust', delta=.05))
+        ui.result('z_adjust', dict(ok=True))
+        self.assertIn('+0.075', ui.lines({})[1])
+        ui.click(); self.assertEqual(ui.mode, 'status')  # printing: straight back
+        self.assertEqual(host_module.build_printer_command(dict(action='z_adjust', delta=-.025), self.HOST),
+                         'SET_GCODE_OFFSET Z_ADJUST=-0.025 MOVE=1')
+        self.assertEqual(host_module.build_printer_command(dict(action='z_adjust', delta=.025),
+                         dict(self.HOST, homed='')), 'SET_GCODE_OFFSET Z_ADJUST=0.025')
+        for delta, offset in ((.5, 0), (float('inf'), 0), (.025, .99)):
+            with self.assertRaises(ValueError):
+                host_module.build_printer_command(dict(action='z_adjust', delta=delta),
+                                                  dict(self.HOST, z_offset=offset))
+
+    def test_z_offset_is_capped_and_saved_only_when_idle(self):
+        ui = PanelUI(); ui.enter('printer')
+        ui.selection = ui.items().index('Adjust Z offset'); ui.click()
+        for _ in range(60):
+            ui.rotate(-1)
+            if ui.actions:
+                ui.actions.pop(); ui.result('z_adjust', dict(ok=True))
+        self.assertAlmostEqual(ui.z_offset, -1.0)
+        ui.click(); self.assertEqual(ui.mode, 'zoffset_menu')
+        self.assertEqual(ui.items(), ['Save for future prints', 'Adjust again', 'Back'])
+        ui.click(); self.assertEqual(ui.mode, 'action_confirm')
+        self.assertIn('Printer restarts (~30 s)', ui.lines({}))
+        ui.selection = 0; ui.click()
+        self.assertEqual(ui.actions.pop(), dict(action='z_save'))
+        ui.result('z_save', dict(ok=True)); self.assertEqual(ui.mode, 'job')
+        self.assertEqual(host_module.build_job_scripts(dict(action='z_save'), dict(self.HOST, z_offset=-.1)),
+                         ['Z_OFFSET_APPLY_PROBE', 'SAVE_CONFIG'])
+        for change in (dict(z_offset=0), dict(state='printing', z_offset=.1),
+                       dict(has_probe=False, z_offset=.1)):
+            with self.assertRaises(ValueError):
+                host_module.build_job_scripts(dict(action='z_save'), dict(self.HOST, **change))
+
+    def test_runout_pause_offers_load_then_resume(self):
+        ui = PanelUI()
+        snapshot = dict(print_stats=dict(state='paused'), pause_resume=dict(is_paused=True),
+                        **{'filament_switch_sensor material_0': dict(enabled=True, filament_detected=False)})
+        lines = ui.lines(snapshot)
+        self.assertEqual(lines[0], 'Out of filament')
+        self.assertIn('Load new filament,', lines)
+        self.assertEqual(lines[-1], '> Load    Resume    Menu')
+        ui.click(); self.assertEqual((ui.mode, ui.filament_action), ('filament', 'load'))
+        ui.selection = 3; ui.click(); self.assertEqual(ui.mode, 'status')
+        ui.lines(snapshot); ui.rotate(1); ui.click()
+        self.assertEqual(ui.confirm_action, dict(action='resume'))
+        # Normal (non-runout) pause keeps the two-choice layout.
+        snapshot['filament_switch_sensor material_0']['filament_detected'] = True
+        ui.enter('status'); self.assertEqual(ui.lines(snapshot)[-1], '> Resume print    Menu')
+
+    def test_finished_print_screen_waits_for_cool_bed_and_offers_reprint(self):
+        ui = PanelUI()
+        snapshot = dict(print_stats=dict(state='complete', filename='toys/egg.gcode',
+                                         print_duration=3725), heater_bed=dict(temperature=58),
+                        gcode_move=dict(homing_origin=[0, 0, .05]))
+        lines = ui.lines(snapshot)
+        self.assertEqual(lines[:4], ['Print complete!', 'egg', 'Took 1h02m', 'Bed 58 C: let it cool'])
+        self.assertEqual(lines[5:], ['> Print again', '  Save Z offset', '  Done'])
+        snapshot['heater_bed']['temperature'] = 30
+        self.assertEqual(ui.lines(snapshot)[3], 'Bed is cool: remove print')
+        ui.click(); self.assertEqual(ui.confirm_action, dict(action='print', filename='toys/egg.gcode'))
+        self.assertIn('Remove the old print first', ui.lines({}))
+        ui.click(); self.assertEqual(ui.mode, 'status')  # Back by default
+        ui.lines(snapshot); ui.selection = 2; ui.click()
+        self.assertEqual(ui.lines(snapshot)[-1], 'Click: Menu')  # dismissed
+        snapshot['gcode_move']['homing_origin'] = [0, 0, 0]
+        ui.finished_dismissed = None
+        self.assertEqual(ui.lines(snapshot)[5:], ['> Print again', '  Done'])
+
+    def test_calibrate_bed_runs_as_background_job(self):
+        ui = PanelUI(); ui.enter('printer')
+        ui.selection = ui.items().index('Calibrate bed'); ui.click()
+        self.assertIn('Bed must be empty', ui.lines({}))
+        self.assertEqual(ui.selection, 1)
+        ui.selection = 0; ui.click()
+        self.assertEqual(ui.actions.pop(), dict(action='calibrate'))
+        ui.result('calibrate', dict(ok=True))
+        self.assertEqual(ui.lines({})[0], 'Calibrating bed...')
+        ui.update_network(dict(job=dict(name='calibrate', state='running')))
+        self.assertEqual(ui.mode, 'job')
+        ui.update_network(dict(job=dict(name='calibrate', state='failed', error='Probe triggered early')))
+        self.assertEqual(ui.lines({})[:3], ['Calibration failed', 'Probe triggered early',
+                                            'Nothing was saved'])
+        scripts = host_module.build_job_scripts(dict(action='calibrate'), self.HOST)
+        self.assertEqual(scripts, ['M140 S60\nG28\nM190 S60\nZ_TILT_ADJUST\nG28 Z\n'
+                                   '_BED_MESH_CALIBRATE\nBED_MESH_PROFILE SAVE=default\nM140 S0',
+                                   'SAVE_CONFIG'])
+        self.assertNotIn('Z_TILT', host_module.build_job_scripts(
+            dict(action='calibrate'), dict(self.HOST, has_z_tilt=False))[0])
+        for change in (dict(state='printing'), dict(busy=True), dict(has_probe=False),
+                       dict(has_mesh=False)):
+            with self.assertRaises(ValueError):
+                host_module.build_job_scripts(dict(action='calibrate'), dict(self.HOST, **change))
+
+    def test_host_job_reports_failure_and_tolerates_save_config_restart(self):
+        host = host_module.Host.__new__(host_module.Host)
+        calls = []
+        def gcode(script, timeout):
+            calls.append(script)
+            if script == 'SAVE_CONFIG':
+                raise OSError('Klippy disconnected')
+        host.gcode = gcode
+        job = dict(name='calibrate', state='running', error='')
+        host._run_job(job, ['G28', 'SAVE_CONFIG'])
+        self.assertEqual((job['state'], calls), ('done', ['G28', 'SAVE_CONFIG']))
+        error = host_module.urllib.error.HTTPError('u', 400, 'bad', {}, io.BytesIO(
+            b'{"error": {"message": "Probe triggered prior to movement"}}'))
+        host.gcode = Mock(side_effect=error)
+        job = dict(name='calibrate', state='running', error='')
+        host._run_job(job, ['G28', 'SAVE_CONFIG'])
+        self.assertEqual(job, dict(name='calibrate', state='failed',
+                                   error='Probe triggered prior to movement'))
+        self.assertEqual(host.gcode.call_count, 1)  # never saves after a failure
+        host.job = dict(state='running'); host.require_idle = Mock()
+        with self.assertRaises(ValueError):
+            host.start_job(dict(action='calibrate'))
 
 
 if __name__ == '__main__':

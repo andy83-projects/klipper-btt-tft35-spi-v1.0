@@ -258,11 +258,15 @@ class B1Panel:
                  'Klipper-dependent test']
         if getattr(self, 'ui', None):
             snapshot = {}
+            now = self.reactor.monotonic()
             for name in ('print_stats', 'pause_resume', 'display_status', 'extruder', 'heater_bed',
-                         'fan', 'heater_fan heatbreak_fan1', 'temperature_fan SoC_fan'):
+                         'fan', 'heater_fan heatbreak_fan1', 'temperature_fan SoC_fan',
+                         'gcode_move'):
                 instance = self.printer.lookup_object(name, None)
                 if instance:
-                    snapshot[name] = instance.get_status(self.reactor.monotonic())
+                    snapshot[name] = instance.get_status(now)
+            for name, instance in self.printer.lookup_objects('filament_switch_sensor'):
+                snapshot[name] = instance.get_status(now)
             lines = self.ui.lines(snapshot)
             lines = (lines + [''] * 8)[:8]
             if self.brightness != self.ui.brightness:

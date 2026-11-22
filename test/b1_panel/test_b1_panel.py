@@ -57,7 +57,7 @@ class PanelTests(unittest.TestCase):
         panel = make_panel()
         panel.ui = b1_panel.PanelUI()
         panel.backend_queue = b1_panel.thread_queue.Queue()
-        panel.ui.enter('printer'); panel.ui.selection = 6; panel.ui.click()
+        panel.ui.enter('printer'); panel.ui.selection = panel.ui.items().index('Load filament'); panel.ui.click()
         panel.ui.selection = 0; panel.ui.click()
         panel.ui.actions.clear()
         panel.ui.result('filament_heat', {'ok': True})
