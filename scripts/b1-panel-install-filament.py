@@ -65,7 +65,7 @@ def main():
     if (current['webhooks']['state'] != 'ready'
             or current['print_stats']['state'] in ('printing', 'paused')
             or current['pause_resume']['is_paused']
-            or current['idle_timeout']['state'] != 'Idle'
+            or current['idle_timeout']['state'] not in ('Idle', 'Ready')
             or any(current[h]['target'] > 0 for h in ('extruder', 'heater_bed'))):
         raise SystemExit('Wait until printer is idle, unpaused and heater targets are off')
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')

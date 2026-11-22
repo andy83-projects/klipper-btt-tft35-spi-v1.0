@@ -152,7 +152,7 @@ class Host:
         req = urllib.request.Request('http://127.0.0.1:7125' + endpoint,
             data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'})
         json.load(urllib.request.urlopen(req,
-            timeout=30 if request['action'] in ('load', 'unload') else 10))
+            timeout=30 if request['action'] in ('load', 'unload', 'jog') else 10))
 
     def require_idle(self, cool=False):
         url = ('http://127.0.0.1:7125/printer/objects/query?print_stats&idle_timeout'
@@ -314,7 +314,7 @@ def build_printer_command(request, data):
             raise ValueError('Jog exceeds configured axis limits')
         feedrate = 300 if axis == 'Z' else 3000
         return ('SAVE_GCODE_STATE NAME=BTT_PANEL_JOG\nG91\nG1 %s%.3f F%d\n'
-                'RESTORE_GCODE_STATE NAME=BTT_PANEL_JOG' % (axis, distance, feedrate))
+                'RESTORE_GCODE_STATE NAME=BTT_PANEL_JOG\nM400' % (axis, distance, feedrate))
     if action == 'home':
         axes = request.get('axes')
         if axes not in ('XY', 'Z', 'XYZ'):

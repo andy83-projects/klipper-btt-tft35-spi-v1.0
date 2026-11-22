@@ -79,6 +79,7 @@ class PanelUI:
         self.jog_axis = 'X'
         self.jog_step = 1.
         self.jog_delta = 0.
+        self.jog_pending = False
         self.target_kind = 'nozzle'
         self.target_value = 0
         self.confirm_action = None
@@ -125,6 +126,14 @@ class PanelUI:
             self.tell('Connection rolled back', 'Previous settings restored')
 
     def result(self, action, result):
+        if action == 'jog':
+            self.jog_pending = False
+            if result.get('ok'):
+                self.jog_delta = 0.
+                self.enter('jog')
+            else:
+                self.tell(result.get('error', 'Jog failed'), back='jog')
+            return
         if action == 'filament_heat':
             if self.filament_phase != 'heating':
                 return  # A cancelled heat request must never trigger feeding.
@@ -165,7 +174,7 @@ class PanelUI:
         elif action in ('load', 'unload'):
             self.filament_phase = None
             self.enter('filament_done')
-        elif action in ('jog', 'home', 'pause', 'resume', 'cancel', 'heater',
+        elif action in ('home', 'pause', 'resume', 'cancel', 'heater',
                         'fan', 'motors_off', 'emergency'):
             self.tell('Command accepted', back=self.action_back)
 
@@ -246,6 +255,8 @@ class PanelUI:
         return []
 
     def rotate(self, delta):
+        if self.jog_pending:
+            return
         if self.mode == 'filament_temp':
             minimum = self.printer_data.get('nozzle_min', 170)
             maximum = self.printer_data.get('nozzle_max', 245)
@@ -271,6 +282,8 @@ class PanelUI:
             self.selection = (self.selection + delta) % len(self.items())
 
     def click(self):
+        if self.jog_pending:
+            return
         mode, selected = self.mode, self.selection
         if mode == 'status':
             if self.printer_data.get('paused') and selected == 0:
@@ -342,7 +355,8 @@ class PanelUI:
         elif mode == 'jog':
             if self.jog_delta:
                 self.confirm('Move %s %+g mm?' % (self.jog_axis, self.jog_delta),
-                             dict(action='jog', axis=self.jog_axis, distance=self.jog_delta))
+                             dict(action='jog', axis=self.jog_axis, distance=self.jog_delta),
+                             back='jog')
             else:
                 self.enter('motion')
         elif mode == 'heat':
@@ -362,6 +376,8 @@ class PanelUI:
             self.confirm('Set %s to %d?' % (self.target_kind, self.target_value), action)
         elif mode == 'action_confirm':
             if selected == 1:
+                if self.confirm_action['action'] == 'jog':
+                    self.jog_pending = True
                 if self.confirm_action['action'] in ('load', 'unload'):
                     if self.waiting:
                         self.tell('Filament command in progress', back='filament')
@@ -565,7 +581,7 @@ class PanelUI:
         if self.mode == 'jog':
             return ['Jog ' + self.jog_axis, '%+g mm (step %g)' % (self.jog_delta, self.jog_step),
                     'Rotate: set distance', 'Click: review, then confirm',
-                    'No motion until confirmed', 'Set zero + click to go back']
+                    'After move: rotate to jog again', 'Set zero + click to go back']
         if self.mode == 'target':
             return ['Set ' + self.target_kind, str(self.target_value),
                     'Rotate: change by 5', 'Click: review, then confirm']

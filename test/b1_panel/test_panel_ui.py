@@ -145,6 +145,31 @@ class UITests(unittest.TestCase):
         self.assertFalse(ui.actions)
         ui.click(); self.assertEqual(ui.mode, 'action_confirm')
         ui.click(); self.assertFalse(ui.actions)  # default Cancel
+        self.assertEqual(ui.mode, 'jog')
+
+    def test_jog_success_returns_to_same_axis_ready_for_another_move(self):
+        ui = PanelUI(); ui.enter('motion'); ui.selection = 2; ui.click()
+        ui.rotate(3); ui.click(); ui.selection = 1; ui.click()
+        self.assertTrue(ui.jog_pending)
+        self.assertEqual(ui.actions.pop(), dict(action='jog', axis='Z', distance=3))
+        ui.click(); ui.rotate(20)
+        self.assertFalse(ui.actions)  # no repeat while the first move is running
+        ui.result('jog', dict(ok=True))
+        self.assertEqual((ui.mode, ui.jog_axis, ui.jog_delta), ('jog', 'Z', 0))
+        ui.rotate(-2); ui.click(); ui.selection = 1; ui.click()
+        self.assertEqual(ui.actions.pop(), dict(action='jog', axis='Z', distance=-2))
+        ui.result('jog', dict(ok=True)); ui.click()
+        self.assertEqual(ui.mode, 'motion')  # zero + click still leaves jog
+
+    def test_failed_jog_returns_to_edit_the_proposed_distance(self):
+        ui = PanelUI(); ui.enter('motion'); ui.click(); ui.rotate(-10)
+        ui.click(); ui.selection = 1; ui.click(); ui.actions.clear()
+        ui.result('jog', dict(ok=False, error='Jog exceeds configured axis limits'))
+        self.assertFalse(ui.jog_pending)
+        ui.click(); self.assertEqual(ui.mode, 'jog')
+        self.assertEqual(ui.jog_delta, -10)
+        ui.rotate(9); self.assertEqual(ui.jog_delta, -1)
+        self.assertFalse(ui.actions)
 
     def test_home_requires_confirmation(self):
         ui = PanelUI(); ui.enter('motion'); ui.selection = 4; ui.click()
@@ -158,6 +183,7 @@ class UITests(unittest.TestCase):
         command = host_module.build_printer_command(dict(action='jog', axis='Z', distance=-1), data)
         self.assertIn('G91\nG1 Z-1.000 F300', command)
         self.assertIn('RESTORE_GCODE_STATE NAME=BTT_PANEL_JOG', command)
+        self.assertTrue(command.endswith('\nM400'))
         for change in ({'homed': ''}, {'state': 'printing'}, {'busy': True}, {'position': [150, 150, 0]}):
             with self.assertRaises(ValueError):
                 host_module.build_printer_command(dict(action='jog', axis='Z', distance=-1), dict(data, **change))

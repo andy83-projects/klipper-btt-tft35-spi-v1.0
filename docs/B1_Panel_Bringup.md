@@ -66,7 +66,11 @@ previous menu; Menu > Back returns to status. Available pages:
   screen when appropriate. A filament change never resumes the print automatically.
 - Motion/Homing: jog X/Y/Z; 0.1/1/10 mm step sizes; Home XY; Home Z; Home All;
   Motors off. Rotation sets a proposed jog distance; movement requires a
-  separate confirmation. Jogging requires the axis homed, idle printer and
+  separate confirmation. After the move finishes, the same axis's jog screen
+  reopens with zero proposed distance: rotate to jog again, or click at zero
+  to return to Motion/Homing. Cancelling a confirmation returns to the proposed
+  jog so its distance can be adjusted. Repeated inputs while a jog is in flight
+  do not queue duplicate moves. Jogging requires the axis homed, idle printer and
   destination within its configured limits. Z-only homing requires XY homed.
   The jog restores the previous G-code state without a return move. Homing
   uses the existing G28 configuration, never force_move or fake homing.
@@ -118,7 +122,7 @@ independently confirm final Linux halt with the present EXP wiring.
 
 ### Validation and latency
 
-42 automated tests cover the display transport, real Klipper command parser,
+44 automated tests cover the display transport, real Klipper command parser,
 UI editor/cancel flows, password redaction, recovery gate, bounds/homing/idle
 guards, heater limits, filament feeding/state restoration, paused dashboard
 resume, automatic heat/feed, heating cancellation/failure/timeout, automatic

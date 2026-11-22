@@ -300,7 +300,7 @@ class B1Panel:
                 request = dict(action='snapshot')
             try:
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                    client.settimeout(45. if request['action'] in ('load', 'unload') else 12.)
+                    client.settimeout(45. if request['action'] in ('load', 'unload', 'jog') else 12.)
                     client.connect(self.backend_path)
                     client.sendall(json.dumps(request).encode() + b'\n')
                     data = b''
