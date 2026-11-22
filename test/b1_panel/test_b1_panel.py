@@ -58,7 +58,7 @@ class PanelTests(unittest.TestCase):
         panel.ui = b1_panel.PanelUI()
         panel.backend_queue = b1_panel.thread_queue.Queue()
         panel.ui.enter('printer'); panel.ui.selection = 6; panel.ui.click()
-        panel.ui.selection = 1; panel.ui.click()
+        panel.ui.selection = 0; panel.ui.click()
         panel.ui.actions.clear()
         panel.ui.result('filament_heat', {'ok': True})
         panel._backend_result('snapshot', dict(ok=True, printer=dict(

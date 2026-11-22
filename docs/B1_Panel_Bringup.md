@@ -49,7 +49,7 @@ previous menu; Menu > Back returns to status. Available pages:
   when hot. No separate heat or feed confirmation is needed. The default is
   the current nozzle target, or 210 C when cold (PLA); temperature remains
   adjustable on the confirmation page for other materials.
-  Cancel is selected by default. Clicking while heating cancels before feeding
+  Back is the last option and is selected by default. Clicking while heating cancels before feeding
   and restores the previous heat target. Heating expires after ten minutes;
   a changed target, new active print or failed heating acknowledgement prevents
   automatic feeding. Feed completion waits for the extruder motion to finish.
@@ -61,16 +61,18 @@ previous menu; Menu > Back returns to status. Available pages:
   feed are refused; an actually paused print permits filament changes.
   Only the extruder moves, and its G-code state is restored without a return
   move. The nozzle heater remains on; use Heat/Part fan to turn it off when
-  finished, or select Turn nozzle off on the completion screen. Extrude more
-  and Retract more show the chosen feed length and remain available after every
-  operation, defaulting to the last direction. Either repeats the confirmation
-  flow without leaving the controls; Done returns to the paused status
-  screen when appropriate. A filament change never resumes the print automatically.
+  finished, or select Turn nozzle off on the completion screen. The completion
+  screen offers Extrude more, Retract more, Turn nozzle off and Back, with the
+  cursor on the last direction. Extrude more and Retract more immediately feed
+  the chosen length again at the hot nozzle and return to the same screen, so
+  they can be repeated as often as needed; if the nozzle has cooled the host
+  refuses the feed and the panel returns to the Load/Unload setup. Back returns
+  to the paused status screen when appropriate. A filament change never resumes the print automatically.
 - Motion/Homing: jog X/Y/Z; 0.1/1/10 mm step sizes; Home XY; Home Z; Home All;
   Motors off. Rotation sets a proposed jog distance; movement requires a
   separate confirmation. After the move finishes, the same axis's jog screen
   reopens with zero proposed distance: rotate to jog again, or click at zero
-  to return to Motion/Homing. Cancelling a confirmation returns to the proposed
+  to return to Motion/Homing. Choosing Back on a confirmation returns to the proposed
   jog so its distance can be adjusted. Repeated inputs while a jog is in flight
   do not queue duplicate moves. Jogging requires the axis homed, idle printer and
   destination within its configured limits. Z-only homing requires XY homed.
@@ -79,14 +81,15 @@ previous menu; Menu > Back returns to status. Available pages:
 - Heat/Part fan: nozzle and bed targets, part fan percentage, all heaters off.
   Targets are capped below configured maximum temperatures. Automatic hotend
   and CB1 fans are displayed but not overridden. Consequential actions have
-  a confirmation with Cancel selected by default.
+  a confirmation (Confirm, then Back) with Back selected by default.
 - Network: detected SSIDs from NetworkManager; saved connection or masked
   rotary password entry; DHCP; manual address, subnet prefix/mask, gateway,
   DNS; connection status. Octets wrap 0..255 in both directions, and pressing
-  advances to the next octet. Review offers Confirm/Edit/Change/Cancel.
+  advances to the next octet. Review offers Confirm/Edit/Change/Back.
+  The password keyboard ends with <DELETE>, <DONE> and <BACK>.
 - Text brightness: 10..100%, saved locally. V1.0's backlight is hard-wired;
   this changes rendered foreground intensity, not backlight power.
-- Shut down: Cancel is the default. Confirmation first finishes drawing
+- Shut down: Confirm shutdown, then Back; Back is the default. Confirmation first finishes drawing
   "Shutting down / Wait at least 30 seconds / before switching off" and then
   requests a normal systemd poweroff. The host must be idle, heater targets
   off, nozzle below 50 C and bed below 60 C. This is a timed instruction,

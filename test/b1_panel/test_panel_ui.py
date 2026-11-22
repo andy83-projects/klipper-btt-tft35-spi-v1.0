@@ -48,7 +48,7 @@ class UITests(unittest.TestCase):
         ui.rotate(-1); self.assertEqual(ui.octets[1], 255)
         ui.click(); ui.click(); ui.click()
         self.assertEqual(ui.mode, 'octet_review')
-        self.assertEqual(ui.items(), ['Confirm', 'Edit', 'Change', 'Cancel'])
+        self.assertEqual(ui.items(), ['Confirm', 'Edit', 'Change', 'Back'])
         ui.click(); self.assertEqual(ui.draft['address'], '255.255.0.0')
         self.assertFalse(ui.actions)  # editing alone never changes networking
 
@@ -56,7 +56,7 @@ class UITests(unittest.TestCase):
         ui = PanelUI(); ui.enter('password'); ui.secret = 'SeCrEt!12345'
         self.assertNotIn(ui.secret, json.dumps(ui.lines({})))
         self.assertNotIn(ui.secret, json.dumps(ui.public_status()))
-        ui.selection = ui.PASSWORD_KEYS.index('<CANCEL>'); ui.click()
+        ui.selection = ui.PASSWORD_KEYS.index('<BACK>'); ui.click()
         self.assertEqual(ui.secret, '')
         self.assertFalse(ui.actions)
 
@@ -93,7 +93,7 @@ class UITests(unittest.TestCase):
     def test_shutdown_requires_deliberate_confirm_default_cancel(self):
         ui = PanelUI(); ui.enter('main'); ui.selection = 3; ui.click()
         ui.click(); self.assertEqual(ui.mode, 'main'); self.assertFalse(ui.actions)
-        ui.selection = 3; ui.click(); ui.selection = 1; ui.click()
+        ui.selection = 3; ui.click(); ui.selection = 0; ui.click()
         self.assertEqual(ui.actions, [{'action': 'poweroff'}])
         self.assertIn('Wait at least 30 seconds', ui.lines({}))
         self.assertNotIn('Safe to switch off', ui.lines({}))
@@ -144,26 +144,26 @@ class UITests(unittest.TestCase):
         ui.rotate(3); self.assertEqual(ui.jog_delta, 3.)
         self.assertFalse(ui.actions)
         ui.click(); self.assertEqual(ui.mode, 'action_confirm')
-        ui.click(); self.assertFalse(ui.actions)  # default Cancel
+        ui.click(); self.assertFalse(ui.actions)  # default Back
         self.assertEqual(ui.mode, 'jog')
 
     def test_jog_success_returns_to_same_axis_ready_for_another_move(self):
         ui = PanelUI(); ui.enter('motion'); ui.selection = 2; ui.click()
-        ui.rotate(3); ui.click(); ui.selection = 1; ui.click()
+        ui.rotate(3); ui.click(); ui.selection = 0; ui.click()
         self.assertTrue(ui.jog_pending)
         self.assertEqual(ui.actions.pop(), dict(action='jog', axis='Z', distance=3))
         ui.click(); ui.rotate(20)
         self.assertFalse(ui.actions)  # no repeat while the first move is running
         ui.result('jog', dict(ok=True))
         self.assertEqual((ui.mode, ui.jog_axis, ui.jog_delta), ('jog', 'Z', 0))
-        ui.rotate(-2); ui.click(); ui.selection = 1; ui.click()
+        ui.rotate(-2); ui.click(); ui.selection = 0; ui.click()
         self.assertEqual(ui.actions.pop(), dict(action='jog', axis='Z', distance=-2))
         ui.result('jog', dict(ok=True)); ui.click()
         self.assertEqual(ui.mode, 'motion')  # zero + click still leaves jog
 
     def test_failed_jog_returns_to_edit_the_proposed_distance(self):
         ui = PanelUI(); ui.enter('motion'); ui.click(); ui.rotate(-10)
-        ui.click(); ui.selection = 1; ui.click(); ui.actions.clear()
+        ui.click(); ui.selection = 0; ui.click(); ui.actions.clear()
         ui.result('jog', dict(ok=False, error='Jog exceeds configured axis limits'))
         self.assertFalse(ui.jog_pending)
         ui.click(); self.assertEqual(ui.mode, 'jog')
@@ -174,7 +174,7 @@ class UITests(unittest.TestCase):
     def test_home_requires_confirmation(self):
         ui = PanelUI(); ui.enter('motion'); ui.selection = 4; ui.click()
         self.assertFalse(ui.actions)
-        ui.selection = 1; ui.click()
+        ui.selection = 0; ui.click()
         self.assertEqual(ui.actions, [{'action': 'home', 'axes': 'XY'}])
 
     def test_motion_commands_require_homing_idle_and_bounds(self):
@@ -208,10 +208,10 @@ class UITests(unittest.TestCase):
         ui.selection = ui.items().index('Load filament'); ui.click()
         self.assertEqual(ui.mode, 'filament')
         self.assertFalse(ui.actions)
-        ui.click()  # default Cancel never heats or feeds
+        ui.click()  # default Back never heats or feeds
         self.assertEqual(ui.mode, 'printer')
         ui.selection = ui.items().index('Load filament'); ui.click()
-        ui.selection = 1; ui.click()
+        ui.selection = 0; ui.click()
         self.assertEqual(ui.actions.pop(), dict(action='filament_heat', target=210))
         self.assertEqual(ui.mode, 'filament_heating')
         data = dict(state='paused', paused=True, nozzle_target=210,
@@ -230,39 +230,63 @@ class UITests(unittest.TestCase):
         ui.result('load', {'ok': True})
         self.assertEqual(ui.mode, 'filament_done')
         self.assertIn('Nozzle stays HOT', ui.lines({}))
-        ui.selection = 2; ui.click(); self.assertEqual(ui.mode, 'status')
+        ui.selection = 3; ui.click(); self.assertEqual(ui.mode, 'status')
         self.assertNotIn(dict(action='resume'), ui.actions)
 
     def test_filament_controls_allow_repeated_extrude_and_retract_until_done(self):
-        ui = PanelUI(); ui.printer_data = dict(state='paused', paused=True,
-            nozzle_target=210, nozzle_temperature=210, can_extrude=True)
+        hot = dict(state='paused', paused=True, nozzle_target=210,
+                   nozzle_temperature=210, can_extrude=True)
+        ui = PanelUI(); ui.printer_data = dict(hot)
         ui.enter('printer'); ui.selection = 6; ui.click()
-        # Each run reaches the same controls with no stale busy/phase latch.
-        operations = ('load', 'load', 'unload', 'unload', 'load')
-        for index, action in enumerate(operations):
-            self.assertEqual(ui.filament_action, action)
-            self.assertEqual(ui.mode, 'filament')
-            ui.selection = 1; ui.click()
-            self.assertEqual(ui.actions.pop(), dict(action='filament_heat', target=210))
-            ui.result('filament_heat', dict(ok=True))
-            ui.update_network(dict(printer=dict(state='paused', paused=True,
-                nozzle_target=210, nozzle_temperature=210, can_extrude=True)))
-            self.assertEqual(ui.actions.pop(), dict(action=action, length=20, temperature=210))
-            ui.result(action, dict(ok=True))
+        self.assertEqual(ui.items()[-1], 'Back')
+        self.assertEqual(ui.selection, 3)  # cursor starts on Back
+        ui.selection = 0; ui.click()
+        self.assertEqual(ui.actions.pop(), dict(action='filament_heat', target=210))
+        ui.result('filament_heat', dict(ok=True))
+        ui.update_network(dict(printer=dict(hot)))
+        self.assertEqual(ui.actions.pop(), dict(action='load', length=20, temperature=210))
+        ui.result('load', dict(ok=True))
+        # Extrude more / Retract more feed again straight away, no menu detour.
+        for action in ('load', 'unload', 'unload', 'load'):
+            self.assertEqual(ui.mode, 'filament_done')
+            self.assertEqual(ui.items(), ['Extrude more (20 mm)', 'Retract more (20 mm)',
+                                          'Turn nozzle off', 'Back'])
             self.assertFalse(ui.waiting)
             self.assertIsNone(ui.filament_phase)
-            self.assertEqual(ui.mode, 'filament_done')
-            self.assertEqual(ui.items()[:2], ['Extrude more (20 mm)', 'Retract more (20 mm)'])
+            ui.selection = 0 if action == 'load' else 1; ui.click()
+            self.assertEqual(ui.mode, 'filament_feeding')
+            self.assertEqual(ui.actions.pop(), dict(action=action, length=20, temperature=210))
+            ui.click(); self.assertFalse(ui.actions)  # no second feed while feeding
+            ui.result(action, dict(ok=True))
             self.assertEqual(ui.selection, 0 if action == 'load' else 1)
-            self.assertFalse(ui.actions)
-            # Select the next operation from the completion controls.
-            if index + 1 < len(operations):
-                following = operations[index + 1]
-                ui.selection = 0 if following == 'load' else 1
-                ui.click(); self.assertFalse(ui.actions)
-        ui.selection = 2; ui.click()
+        ui.selection = 3; ui.click()
         self.assertEqual(ui.mode, 'status')
         self.assertFalse(ui.actions)
+
+    def test_repeat_feed_after_cooling_reports_error_and_returns_to_setup(self):
+        ui = PanelUI(); ui.filament_action = 'load'; ui.enter('filament_done')
+        ui.selection = 1; ui.click()
+        self.assertEqual(ui.actions.pop(), dict(action='unload', length=20, temperature=210))
+        ui.result('unload', dict(ok=False, error='Heat nozzle first; wait for temp'))
+        self.assertIn('Heat nozzle first', ui.lines({})[0])
+        ui.click(); self.assertEqual(ui.mode, 'filament')
+        self.assertEqual(ui.filament_action, 'unload')
+
+    def test_confirm_screens_put_back_last_and_start_on_it(self):
+        ui = PanelUI(); ui.confirm('Emergency print?', dict(action='emergency'))
+        self.assertEqual(ui.items(), ['Confirm', 'Back'])
+        self.assertEqual(ui.selection, 1)
+        ui.click(); self.assertFalse(ui.actions); self.assertEqual(ui.mode, 'printer')
+        ui.enter('shutdown_confirm')
+        self.assertEqual(ui.items(), ['Confirm shutdown', 'Back'])
+        self.assertEqual(ui.selection, 1)
+        for mode in ('ip_review', 'octet_review', 'apply_review'):
+            ui.enter(mode); self.assertEqual(ui.items()[-1], 'Back')
+        self.assertEqual(ui.PASSWORD_KEYS[-1], '<BACK>')
+        self.assertFalse(any('Cancel' == item for mode in (
+            'filament', 'filament_done', 'action_confirm', 'shutdown_confirm',
+            'ip_review', 'octet_review', 'apply_review')
+            for item in (ui.enter(mode) or ui.items())))
 
     def test_filament_feed_failure_keeps_the_controls_reachable(self):
         ui = PanelUI(); ui.filament_action = 'unload'; ui.waiting = True
@@ -278,13 +302,13 @@ class UITests(unittest.TestCase):
         ui = PanelUI(); ui.printer_data = dict(nozzle_min=170, nozzle_max=245, nozzle_target=230)
         ui.enter('printer'); ui.selection = ui.items().index('Unload filament'); ui.click()
         self.assertEqual(ui.filament_temperature, 230)
-        ui.selection = 2; ui.click(); ui.rotate(1000); self.assertEqual(ui.filament_temperature, 245)
+        ui.selection = 1; ui.click(); ui.rotate(1000); self.assertEqual(ui.filament_temperature, 245)
         ui.rotate(-1000); self.assertEqual(ui.filament_temperature, 170)
-        ui.click(); ui.selection = 3; ui.click(); ui.rotate(-1000)
+        ui.click(); ui.selection = 2; ui.click(); ui.rotate(-1000)
         self.assertEqual(ui.filament_length, 5)
         ui.rotate(1000); self.assertEqual(ui.filament_length, 50)
         self.assertFalse(ui.actions)
-        ui.click(); ui.selection = 1; ui.click()
+        ui.click(); ui.selection = 0; ui.click()
         self.assertEqual(ui.actions.pop(), dict(action='filament_heat', target=170))
         ui.result('filament_heat', dict(ok=True))
         ui.update_network(dict(printer=dict(state='standby', paused=False,
@@ -303,7 +327,7 @@ class UITests(unittest.TestCase):
         ui.enter('status'); ui.lines(snapshot); ui.click()
         self.assertEqual(ui.mode, 'action_confirm'); self.assertFalse(ui.actions)
         ui.click(); self.assertEqual(ui.mode, 'status')
-        ui.click(); ui.selection = 1; ui.click()
+        ui.click(); ui.selection = 0; ui.click()
         self.assertEqual(ui.actions, [dict(action='resume')])
         ui.result('resume', {'ok': True}); ui.click()
         ui.lines(dict(print_stats=dict(state='printing'), pause_resume=dict(is_paused=False)))
@@ -347,13 +371,13 @@ class UITests(unittest.TestCase):
     def test_duplicate_filament_confirmation_is_not_queued(self):
         ui = PanelUI(); ui.waiting = True
         ui.confirm('Load?', dict(action='load', length=50, temperature=210), back='filament')
-        ui.selection = 1; ui.click()
+        ui.selection = 0; ui.click()
         self.assertFalse(ui.actions)
         self.assertIn('in progress', ui.lines({})[0])
 
     def test_cancel_heating_ignores_late_ack_and_never_feeds(self):
         ui = PanelUI(); ui.enter('printer'); ui.selection = 6; ui.click()
-        ui.selection = 1; ui.click(); ui.actions.clear()
+        ui.selection = 0; ui.click(); ui.actions.clear()
         ui.click()
         self.assertEqual(ui.actions, [dict(action='filament_stop', target=0)])
         ui.result('filament_heat', dict(ok=True))
@@ -367,7 +391,7 @@ class UITests(unittest.TestCase):
         for scenario in ('failure', 'timeout', 'target', 'printing'):
             with self.subTest(scenario=scenario):
                 ui = PanelUI(); ui.enter('printer'); ui.selection = 6; ui.click()
-                ui.selection = 1; ui.click(); ui.actions.clear()
+                ui.selection = 0; ui.click(); ui.actions.clear()
                 if scenario == 'failure':
                     ui.result('filament_heat', dict(ok=False, error='No heater'))
                 else:

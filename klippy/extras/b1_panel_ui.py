@@ -55,7 +55,7 @@ def status_lines(snapshot, network, resume_selected=True):
 class PanelUI:
     # All password characters are entered by rotation, never by G-code.
     CHARACTERS = string.ascii_lowercase + string.ascii_uppercase + string.digits + string.punctuation + ' '
-    PASSWORD_KEYS = list(CHARACTERS) + ['<DELETE>', '<DONE>', '<CANCEL>']
+    PASSWORD_KEYS = list(CHARACTERS) + ['<DELETE>', '<DONE>', '<BACK>']
 
     def __init__(self):
         self.mode = 'status'
@@ -98,8 +98,13 @@ class PanelUI:
         return dict(page=self.mode, selection=self.selection,
                     text_brightness=self.brightness, network_busy=self.waiting)
 
+    # Screens whose cursor starts on Back (bottom) so a stray click is harmless.
+    BACK_DEFAULT = ('filament', 'action_confirm', 'shutdown_confirm')
+
     def enter(self, mode):
         self.mode, self.selection = mode, 0
+        if mode in self.BACK_DEFAULT:
+            self.selection = len(self.items()) - 1
 
     def tell(self, *lines, back='network'):
         self.message = list(lines)
@@ -217,20 +222,20 @@ class PanelUI:
                     'Resume print', 'Cancel print', 'Emergency stop',
                     'Load filament', 'Unload filament', 'Back']
         if self.mode == 'filament':
-            return ['Cancel', 'Heat and ' + self.filament_action,
+            return ['Heat and ' + self.filament_action,
                     'Temperature: %d C' % self.filament_temperature,
-                    'Feed length: %d mm' % self.filament_length]
+                    'Feed length: %d mm' % self.filament_length, 'Back']
         if self.mode == 'filament_done':
             return ['Extrude more (%d mm)' % self.filament_length,
                     'Retract more (%d mm)' % self.filament_length,
-                    'Done', 'Turn nozzle off']
+                    'Turn nozzle off', 'Back']
         if self.mode == 'motion':
             return ['Jog X', 'Jog Y', 'Jog Z', 'Step: %g mm' % self.jog_step,
                     'Home XY', 'Home Z', 'Home All', 'Motors off', 'Back']
         if self.mode == 'heat':
             return ['Nozzle target', 'Bed target', 'Part fan %', 'All heaters off', 'Back']
         if self.mode == 'action_confirm':
-            return ['Cancel', 'Confirm']
+            return ['Confirm', 'Back']
         if self.mode == 'network':
             return ['Scan Wi-Fi', 'IPv4 settings', 'Connection status', 'Back']
         if self.mode == 'wifi':
@@ -248,13 +253,13 @@ class PanelUI:
                     'Gateway: ' + self.draft['gateway'],
                     'DNS: ' + self.draft['dns'], 'Review', 'Back']
         if self.mode in ('ip_review', 'octet_review'):
-            return ['Confirm', 'Edit', 'Change', 'Cancel']
+            return ['Confirm', 'Edit', 'Change', 'Back']
         if self.mode == 'apply_review':
-            return ['Confirm connection', 'Edit IPv4', 'Change Wi-Fi', 'Cancel']
+            return ['Confirm connection', 'Edit IPv4', 'Change Wi-Fi', 'Back']
         if self.mode == 'keep':
             return ['Keep this connection', 'Roll back now']
         if self.mode == 'shutdown_confirm':
-            return ['Cancel', 'Confirm shutdown']
+            return ['Confirm shutdown', 'Back']
         return []
 
     def rotate(self, delta):
@@ -309,9 +314,9 @@ class PanelUI:
                 name = {2: 'pause', 3: 'resume', 4: 'cancel', 5: 'emergency'}[selected]
                 self.confirm(name.capitalize() + ' print?', dict(action=name))
         elif mode == 'filament':
-            if selected == 0:
+            if selected == 3:
                 self.enter('printer')
-            elif selected == 1:
+            elif selected == 0:
                 if self.waiting or self.filament_phase:
                     return
                 self.filament_previous_target = self.printer_data.get('nozzle_target', 0)
@@ -323,17 +328,26 @@ class PanelUI:
                 self.actions.append(dict(action='filament_heat',
                                          target=self.filament_temperature))
                 self.enter('filament_heating')
-            elif selected == 2:
+            elif selected == 1:
                 self.enter('filament_temp')
-            elif selected == 3:
+            elif selected == 2:
                 self.enter('filament_length')
         elif mode == 'filament_heating':
             self._cancel_filament()
         elif mode == 'filament_done':
             if selected in (0, 1):
+                if self.waiting or self.filament_phase:
+                    return
+                # Nozzle is already hot: feed again right away; the host
+                # still refuses if it has cooled below the feed temperature.
                 self.filament_action = 'load' if selected == 0 else 'unload'
-                self.enter('filament')
-            elif selected == 3:
+                self.filament_phase = 'feeding'
+                self.waiting = True
+                self.actions.append(dict(action=self.filament_action,
+                                         length=self.filament_length,
+                                         temperature=self.filament_temperature))
+                self.enter('filament_feeding')
+            elif selected == 2:
                 self.action_back = 'status' if self.printer_data.get('paused') else 'printer'
                 self.actions.append(dict(action='heater', heater='nozzle', target=0))
                 self.tell('Turning nozzle off...', back=self.action_back)
@@ -341,6 +355,7 @@ class PanelUI:
                 self.enter('status' if self.printer_data.get('paused') else 'printer')
         elif mode in ('filament_temp', 'filament_length'):
             self.enter('filament')
+            self.selection = 1 if mode == 'filament_temp' else 2
         elif mode == 'motion':
             if selected < 3:
                 self.jog_axis = 'XYZ'[selected]
@@ -379,7 +394,7 @@ class PanelUI:
                 action = dict(action='heater', heater=self.target_kind, target=self.target_value)
             self.confirm('Set %s to %d?' % (self.target_kind, self.target_value), action)
         elif mode == 'action_confirm':
-            if selected == 1:
+            if selected == 0:
                 if self.confirm_action['action'] == 'jog':
                     self.jog_pending = True
                 if self.confirm_action['action'] in ('load', 'unload'):
@@ -435,7 +450,7 @@ class PanelUI:
             key = self.PASSWORD_KEYS[selected]
             if key == '<DELETE>':
                 self.secret = self.secret[:-1]
-            elif key == '<CANCEL>':
+            elif key == '<BACK>':
                 self.secret = ''
                 self.enter('wifi_choice')
             elif key == '<DONE>':
@@ -526,10 +541,10 @@ class PanelUI:
             self.enter('main')
         elif mode == 'shutdown_confirm':
             if selected == 0:
-                self.enter('main')
-            else:
                 self.enter('shutting_down')
                 self.actions.append(dict(action='poweroff'))
+            else:
+                self.enter('main')
         elif mode == 'message':
             self.enter(self.previous_mode)
 
@@ -581,7 +596,7 @@ class PanelUI:
                     '%d characters' % len(self.secret),
                     'Character: ' + self.PASSWORD_KEYS[self.selection],
                     'Rotate: choose; click: add', 'Find <DONE> to finish',
-                    '<DELETE> or <CANCEL>']
+                    '<DELETE> or <BACK>']
         if self.mode == 'jog':
             return ['Jog ' + self.jog_axis, '%+g mm (step %g)' % (self.jog_delta, self.jog_step),
                     'Rotate: set distance', 'Click: review, then confirm',
