@@ -16,7 +16,7 @@ class Pin:
     def __init__(self, name, trace):
         self.name, self.trace = name, trace
 
-    def update_digital_out(self, value):
+    def update_digital_out(self, value, reqclock=None):
         self.trace.append((self.name, value))
 
 
@@ -24,7 +24,7 @@ class SPI:
     def __init__(self, trace):
         self.trace = trace
 
-    def spi_send(self, data):
+    def spi_send(self, data, reqclock=None):
         self.trace.append(('send', bytes(data)))
 
     def spi_transfer(self, data):
@@ -49,6 +49,9 @@ def make_panel():
     panel.last_lines = {}
     panel.ops = b1_panel.collections.deque()
     panel.rotation = 0x28
+    panel.interactive_redraw = False
+    panel.print_interactive_packets = 16
+    panel.print_interactive_interval = .010
     return panel
 
 

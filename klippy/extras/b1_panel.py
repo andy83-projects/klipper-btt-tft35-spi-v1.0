@@ -14,6 +14,10 @@ from . import bus
 from .display.font8x14 import VGA_FONT
 
 
+# Keep display transfers behind time-critical motion commands.
+BACKGROUND_PRIORITY_CLOCK = 0x7fffffff00000000
+
+
 def host_ipv4():
     """Read local interface addresses without network traffic or subprocesses."""
     result = []
@@ -102,6 +106,11 @@ class B1Panel:
         self.ready = self.initialized = self.dirty = False
         self.last_lines = {}
         self.ops = collections.deque()
+        self.interactive_redraw = False
+        self.print_interactive_packets = config.getint(
+            'print_interactive_packets', 16, minval=2, maxval=32)
+        self.print_interactive_interval = config.getfloat(
+            'print_interactive_interval', .010, minval=.005, maxval=.020)
         self.ui_mode = config.getboolean('status_menu', False)
         self.ui = PanelUI() if self.ui_mode else None
         self.brightness = 100
@@ -146,14 +155,14 @@ class B1Panel:
             raise gcmd.error('B1 panel test requires an idle, ready printer')
 
     def _write(self, command, data=b''):
-        self.cs.update_digital_out(0)
-        self.dc.update_digital_out(0)
-        self.spi.spi_send(bytes([command]))
+        self.cs.update_digital_out(0, reqclock=BACKGROUND_PRIORITY_CLOCK)
+        self.dc.update_digital_out(0, reqclock=BACKGROUND_PRIORITY_CLOCK)
+        self.spi.spi_send(bytes([command]), reqclock=BACKGROUND_PRIORITY_CLOCK)
         if data:
-            self.dc.update_digital_out(1)
+            self.dc.update_digital_out(1, reqclock=BACKGROUND_PRIORITY_CLOCK)
             for offset in range(0, len(data), 48):
-                self.spi.spi_send(data[offset:offset+48])
-        self.cs.update_digital_out(1)
+                self.spi.spi_send(data[offset:offset+48], reqclock=BACKGROUND_PRIORITY_CLOCK)
+        self.cs.update_digital_out(1, reqclock=BACKGROUND_PRIORITY_CLOCK)
 
     def cmd_ID(self, gcmd):
         self._guard(gcmd)
@@ -161,14 +170,14 @@ class B1Panel:
             raise gcmd.error('Wait for panel transfer to finish')
         # Hold CS continuously through command and read; do not use hardware
         # RESET or initialize the controller. Keep raw bytes for diagnosis.
-        self.cs.update_digital_out(0)
+        self.cs.update_digital_out(0, reqclock=BACKGROUND_PRIORITY_CLOCK)
         try:
-            self.dc.update_digital_out(0)
-            self.spi.spi_send(b'\xd3')
-            self.dc.update_digital_out(1)
+            self.dc.update_digital_out(0, reqclock=BACKGROUND_PRIORITY_CLOCK)
+            self.spi.spi_send(b'\xd3', reqclock=BACKGROUND_PRIORITY_CLOCK)
+            self.dc.update_digital_out(1, reqclock=BACKGROUND_PRIORITY_CLOCK)
             response = self.spi.spi_transfer(b'\x00' * 4)['response']
         finally:
-            self.cs.update_digital_out(1)
+            self.cs.update_digital_out(1, reqclock=BACKGROUND_PRIORITY_CLOCK)
         gcmd.respond_info('LCD D3 raw: %s (interpretation requires verification)'
                            % bytes(response).hex())
 
@@ -214,6 +223,7 @@ class B1Panel:
             raise gcmd.error('Unsupported read-only menu page')
         self.ui.secret = ''
         self.ui.enter(page)
+        self.interactive_redraw = True
         self.dirty = True
         self.reactor.update_timer(self.timer, self.reactor.NOW)
 
@@ -221,12 +231,13 @@ class B1Panel:
         self.ops.clear()
         self.dirty = self.initialized = False
         self.last_lines.clear()
-        self.cs.update_digital_out(1)
+        self.cs.update_digital_out(1, reqclock=BACKGROUND_PRIORITY_CLOCK)
         self.reactor.update_timer(self.timer, self.reactor.NEVER)
         gcmd.respond_info('Panel transfers stopped; encoder counters retained')
 
     def _event(self, kind, eventtime):
         self.counts[kind] += 1
+        self.interactive_redraw = True
         if getattr(self, 'ui', None):
             if kind == 'press':
                 self.ui.click()
@@ -332,6 +343,7 @@ class B1Panel:
                 self.ui.update_network(result)
         else:
             self.ui.result(name, result)
+            self.interactive_redraw = True
         # Heating completion can queue a feed without another physical click.
         self._ui_actions()
         self.dirty = True
@@ -355,7 +367,7 @@ class B1Panel:
             self.initialized = False
             self.last_lines.clear()
             if self.ready:
-                self.cs.update_digital_out(1)
+                self.cs.update_digital_out(1, reqclock=BACKGROUND_PRIORITY_CLOCK)
             return self.reactor.NEVER
         if not self.ops and self.dirty and self.initialized:
             self._render()
@@ -367,7 +379,10 @@ class B1Panel:
             self.backend_queue.put(dict(action='poweroff'))
         # Bound USB traffic and yield to motion/other reactor work.
         printing = getattr(self, 'ui_mode', False) and not self._idle()
-        packet_budget = 2 if printing else 32
+        # Knob input and completed menu actions need a prompt redraw. Keep
+        # periodic status refreshes at the original two-packet budget.
+        interactive = getattr(self, 'interactive_redraw', False)
+        packet_budget = (self.print_interactive_packets if interactive else 2) if printing else 32
         for _ in range(packet_budget):
             if not self.ops:
                 break
@@ -383,14 +398,16 @@ class B1Panel:
                     self.spi.spi_transfer(b'')
                     return self.reactor.monotonic() + op[3]
             elif op[0] == 'pixel_begin':
-                self.cs.update_digital_out(0)
-                self.dc.update_digital_out(1)
+                self.cs.update_digital_out(0, reqclock=BACKGROUND_PRIORITY_CLOCK)
+                self.dc.update_digital_out(1, reqclock=BACKGROUND_PRIORITY_CLOCK)
             elif op[0] == 'pixel_end':
-                self.cs.update_digital_out(1)
+                self.cs.update_digital_out(1, reqclock=BACKGROUND_PRIORITY_CLOCK)
             else:
-                self.spi.spi_send(op[1])
+                self.spi.spi_send(op[1], reqclock=BACKGROUND_PRIORITY_CLOCK)
         if self.ops or self.dirty:
-            return eventtime + (.020 if printing else .010)
+            interval = (self.print_interactive_interval if interactive else .020) if printing else .010
+            return eventtime + interval
+        self.interactive_redraw = False
         if getattr(self, 'ui_mode', False) and self.initialized:
             self.dirty = True
             return eventtime + 2.
@@ -399,6 +416,8 @@ class B1Panel:
     def get_status(self, eventtime):
         status = dict(self.counts, initialized=self.initialized,
                     transfer_pending=bool(self.ops),
+                    pending_ops=len(self.ops),
+                    interactive_redraw=self.interactive_redraw,
                     text_verified=False, backlight_verified=False)
         if getattr(self, 'ui', None):
             status.update(self.ui.public_status())
