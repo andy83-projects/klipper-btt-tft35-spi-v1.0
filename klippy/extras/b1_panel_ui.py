@@ -1,6 +1,7 @@
 # Encoder-driven B1 panel UI. No hardware, networking or password logging here.
 # Distributed under the GNU GPLv3 license.
 import ipaddress
+import socket
 import string
 import time
 
@@ -143,6 +144,20 @@ class PanelUI:
         self.message = list(lines)
         self.previous_mode = back
         self.enter('message')
+
+    def help_lines(self, hostname=None):
+        # Where the printed guide lives: by mDNS name and by IP address.
+        name = (hostname or socket.gethostname()).lower()
+        if '.' not in name:
+            name += '.local'
+        ip = self.network.get('ip', '')
+        return ['Help guide (iPad/computer)',
+                'http://%s/help' % name,
+                ('http://%s/help' % ip) if ip else 'IP: not connected',
+                'Name: ' + name,
+                'IP:   ' + (ip or 'not connected'),
+                'Dashboard: add :81',
+                'Same Wi-Fi as printer']
 
     def update_network(self, result):
         first = not self.network
@@ -315,8 +330,8 @@ class PanelUI:
             items = [label for label, _ in self.status_items()]
             return items if len(items) > 1 else []
         if self.mode == 'main':
-            return ['Print a file', 'Printer controls', 'Network', 'Text brightness',
-                    'Shut down', 'Back']
+            return ['Print a file', 'Printer controls', 'Network', 'Help',
+                    'Text brightness', 'Shut down', 'Back']
         if self.mode == 'files':
             return [f['name'] for f in self.files] + ['Back']
         if self.mode == 'printer':
@@ -429,6 +444,8 @@ class PanelUI:
                 self.files = []
                 self.actions.append(dict(action='files'))
                 self.enter('files_loading')
+            elif choice == 'Help':
+                self.tell(*self.help_lines(), back='main')
             else:
                 self.enter({'Printer controls': 'printer', 'Network': 'network',
                             'Text brightness': 'brightness',

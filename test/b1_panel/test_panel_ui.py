@@ -446,6 +446,24 @@ class EasyUseTests(unittest.TestCase):
         self.assertIn('Print starting', ui.lines({})[0])
         ui.click(); self.assertEqual(ui.mode, 'status')
 
+    def test_help_shows_guide_by_name_and_ip(self):
+        ui = PanelUI(); ui.network = dict(ip='10.0.0.225')
+        ui.enter('main'); ui.selection = ui.items().index('Help')
+        with unittest.mock.patch('extras.b1_panel_ui.socket.gethostname', return_value='Klipper'):
+            ui.click()
+        lines = ui.lines({})
+        self.assertIn('http://klipper.local/help', lines)
+        self.assertIn('http://10.0.0.225/help', lines)
+        self.assertIn('Name: klipper.local', lines)
+        self.assertIn('IP:   10.0.0.225', lines)
+        self.assertTrue(all(len(line) <= 30 for line in lines))
+        self.assertFalse(ui.actions)
+        ui.click(); self.assertEqual(ui.mode, 'main')
+
+    def test_help_without_network(self):
+        ui = PanelUI()
+        self.assertIn('IP:   not connected', ui.help_lines('klipper'))
+
     def test_empty_file_list_explains_what_to_do(self):
         ui = PanelUI(); ui.enter('main'); ui.click(); ui.actions.clear()
         ui.result('files', dict(ok=True, files=[]))
